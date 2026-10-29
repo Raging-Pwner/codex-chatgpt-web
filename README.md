@@ -228,7 +228,7 @@ Send `{"type":"inspect","id":"inspect_001"}` and await its result before running
 A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"5.6","reasoning":"high"}`.
 Family `6` is also explicit; there is no fallback. Prompts remain exact text, with no
 Codex context, attachments, connector, or local tools. Each run creates a fresh ordinary
-conversation, so account chat history applies. At most three jobs run concurrently;
+conversation, so account chat history applies. Browser preparation and submission are serialized to avoid overlapping native input; submitted responses still run concurrently. At most three jobs run concurrently;
 capacity rejection is immediate. IDs cannot be reused in one process. Events are progress;
 only a `result` containing `text` means completion. Errors never trigger automatic resend.
 Send `{"type":"cancel","id":"request_001"}` to abort an owned job, or

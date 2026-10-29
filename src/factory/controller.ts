@@ -28,6 +28,7 @@ export class FactoryController {
   private readonly inspectionControllers = new Set<AbortController>();
   private observed?: FactoryInspection;
   private stopped = false;
+  private preparationTail: Promise<void> = Promise.resolve();
   private closing?: Promise<void>;
   private readonly limit: number;
   constructor(private readonly options: FactoryControllerOptions) {
@@ -77,6 +78,16 @@ export class FactoryController {
     if (!this.observed) { this.error(req.id, "inspection_required", "A successful authenticated fresh-chat inspection is required"); return; }
     if (this.jobs.size >= this.limit) { this.error(req.id, "capacity", "Factory concurrency limit reached"); return; }
     const abort = new AbortController();
+    const previousPreparation = this.preparationTail;
+    let releasePreparation!: () => void;
+    const preparation = new Promise<void>(resolve => { releasePreparation = resolve; });
+    this.preparationTail = previousPreparation.then(() => preparation);
+    const waitForPreparation = () => new Promise<void>((resolve, reject) => {
+      const cancelled = () => { abort.signal.removeEventListener("abort", cancelled); reject(abort.signal.reason); };
+      if (abort.signal.aborted) { cancelled(); return; }
+      abort.signal.addEventListener("abort", cancelled, { once: true });
+      void previousPreparation.then(() => { abort.signal.removeEventListener("abort", cancelled); resolve(); });
+    });
     const guard = () => { if (abort.signal.aborted || this.stopped) throw Object.assign(new Error("Factory job cancelled"), { code: "cancelled" }); };
     const event = (name: string, fields: { text?: string; reused?: boolean; continuation?: boolean } = {}) => {
       guard(); this.options.emit({ type: "event", id: req.id, event: name, ...fields });
@@ -87,16 +98,16 @@ export class FactoryController {
       nativeConnector: false, retainConversation: false, requireRetainedConversation: false, abortSignal: abort.signal,
       prepare: async () => { guard(); return { text: req.prompt, images: [], release: () => {} }; },
       onPreparedSelected: reused => { guard(); if (reused) throw Object.assign(new Error("Factory requires a fresh conversation"), { code: "reused_conversation" }); event("conversation_created", { reused: false }); },
-      onSendActivated: () => event("send_activated"), onSubmitted: () => event("submitted"),
+      onSendActivated: () => event("send_activated"), onSubmitted: () => { event("submitted"); releasePreparation(); },
       onHeartbeat: () => { if (!abort.signal.aborted && !this.stopped) event("heartbeat"); },
       onGenerationProgress: () => { if (!abort.signal.aborted && !this.stopped) event("generation_progress"); },
       onTextDelta: text => { if (!abort.signal.aborted && !this.stopped) event("text", { text }); },
       onCommentary: (text, continuation) => { if (!abort.signal.aborted && !this.stopped) event("commentary", { text, ...(continuation ? { continuation: true } : {}) }); },
     };
     const done = Promise.resolve().then(async () => {
-      try { guard(); const text = await this.options.run(turn); guard(); this.options.emit({ type: "result", id: req.id, text }); }
+      try { await waitForPreparation(); guard(); const text = await this.options.run(turn); guard(); this.options.emit({ type: "result", id: req.id, text }); }
       catch (error) { if (abort.signal.aborted || this.stopped) this.error(req.id, "cancelled", "Factory job cancelled"); else this.failure(req.id, error); }
-      finally { this.jobs.delete(req.id); }
+      finally { releasePreparation(); this.jobs.delete(req.id); }
     });
     this.jobs.set(req.id, { abort, done });
   }

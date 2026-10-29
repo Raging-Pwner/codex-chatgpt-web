@@ -4,12 +4,12 @@ import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 
 const observed = { authenticated: true, newChat: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
 const request = (id = "turn_001") => ({ type: "run", id, prompt: "  exact\n ", modelFamily: "6", reasoning: "high" });
-function fixture() {
+function fixture(autoSubmit = false) {
   const events: any[] = [];
   const turns: BrowserTurn[] = [];
   const pending: { resolve: (s: string) => void; reject: (e: unknown) => void }[] = [];
   let closed = 0;
-  const controller = new FactoryController({ inspect: async () => observed, run: turn => { turns.push(turn); return new Promise<string>((resolve, reject) => pending.push({ resolve, reject })); }, close: async () => { closed++; }, emit: e => { events.push(e); } });
+  const controller = new FactoryController({ inspect: async () => observed, run: turn => { turns.push(turn); if (autoSubmit) void turn.onSubmitted?.(); return new Promise<string>((resolve, reject) => pending.push({ resolve, reject })); }, close: async () => { closed++; }, emit: e => { events.push(e); } });
   return { controller, events, turns, pending, closed: () => closed };
 }
 const settle = async () => { await new Promise(resolve => setTimeout(resolve, 0)); };
@@ -28,6 +28,7 @@ test("raw fresh turn, lifecycle events, completion only after browser resolves",
   await f.controller.handle({ type: "inspect", id: "inspect1" });
   expect(f.events[0]).toEqual({ type: "result", id: "inspect1", value: observed });
   await f.controller.handle(request());
+  await settle();
   const t = f.turns[0]!;
   expect((await t.prepare()).text).toBe(request().prompt);
   expect((await t.prepare()).images).toEqual([]);
@@ -44,8 +45,9 @@ test("raw fresh turn, lifecycle events, completion only after browser resolves",
   await f.controller.shutdown();
 });
 test("three slots, cancel race, and shutdown await actual jobs", async () => {
-  const f = fixture(); await f.controller.handle({ type: "inspect", id: "inspect1" });
+  const f = fixture(true); await f.controller.handle({ type: "inspect", id: "inspect1" });
   for (let i = 0; i < 4; i++) await f.controller.handle(request(`turn_00${i}`));
+  await settle();
   expect(f.turns).toHaveLength(3);
   await f.controller.handle({ type: "cancel", id: "turn_000" });
   expect(f.turns[0]!.abortSignal!.aborted).toBe(true);
@@ -60,7 +62,7 @@ test("three slots, cancel race, and shutdown await actual jobs", async () => {
   await f.controller.shutdown(); expect(f.closed()).toBe(1);
 });
 test("reject reused conversation and preserve browser failures", async () => {
-  const f = fixture(); await f.controller.handle({ type: "inspect", id: "inspect1" }); await f.controller.handle(request());
+  const f = fixture(); await f.controller.handle({ type: "inspect", id: "inspect1" }); await f.controller.handle(request()); await settle();
   expect(() => f.turns[0]!.onPreparedSelected!(true)).toThrow();
   f.pending[0]!.reject(Object.assign(new Error("selector failed"), { code: "selector_failure" })); await settle();
   expect(f.events.at(-1)).toMatchObject({ type: "error", message: "selector failed", code: "selector_failure" });
@@ -92,4 +94,27 @@ test("shutdown aborts the signal owned by an active inspection", async () => {
   const inspecting = c.handle({ type: "inspect", id: "inspect1" }); await settle();
   await c.shutdown(); await inspecting;
   expect(signal!.aborted).toBe(true);
+});
+
+
+test("preparation is serialized until submission while responses remain concurrent", async () => {
+  const f = fixture(); await f.controller.handle({type:'inspect', id:'inspect1'});
+  for (let i=1;i<=3;i++) await f.controller.handle(request(`serial_00${i}`));
+  await settle(); expect(f.turns).toHaveLength(1);
+  await f.turns[0]!.onSubmitted!(); await settle(); expect(f.turns).toHaveLength(2);
+  await f.turns[1]!.onSubmitted!(); await settle(); expect(f.turns).toHaveLength(3);
+  expect(f.events.filter(e=>e.type==='result' && 'text' in e)).toHaveLength(0);
+  for (const p of f.pending) p.resolve('complete');
+  await settle(); await f.controller.shutdown();
+});
+
+
+test("cancelling queued preparation never starts its browser job or blocks shutdown", async () => {
+  const f = fixture(); await f.controller.handle({type:'inspect', id:'inspect1'});
+  await f.controller.handle(request('queued_001')); await f.controller.handle(request('queued_002'));
+  await settle(); await f.controller.handle({type:'cancel', id:'queued_002'}); await settle();
+  expect(f.turns).toHaveLength(1);
+  await f.turns[0]!.onSubmitted!(); await settle(); expect(f.turns).toHaveLength(1);
+  f.pending[0]!.resolve('complete'); await settle(); await f.controller.shutdown();
+  expect(f.events.some(e=>e.id==='queued_002' && e.code==='cancelled')).toBe(true);
 });
