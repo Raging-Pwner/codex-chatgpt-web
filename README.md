@@ -225,7 +225,7 @@ For source development supply `--browser-helper ABSOLUTE_BUILT_HELPER_PATH`.
 
 The first stdout message is `{"type":"ready","protocol":"triplet-factory/v1","version":"6.1.17"}`.
 Send `{"type":"inspect","id":"inspect_001"}` and await its result before running work.
-A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"5.6","reasoning":"high"}`.
+A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"5.6","reasoning":"high"}`. Use `"reasoning":"xhigh"` only after observed Extra High capability; unavailable efforts fail without fallback.
 Family `6` is also explicit; there is no fallback. Prompts remain exact text, with no
 Codex context, attachments, connector, or local tools. Each run creates a fresh ordinary
 conversation, so account chat history applies. Browser preparation and submission are serialized to avoid overlapping native input; submitted responses still run concurrently. At most three jobs run concurrently;

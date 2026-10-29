@@ -118,3 +118,13 @@ test("cancelling queued preparation never starts its browser job or blocks shutd
   f.pending[0]!.resolve('complete'); await settle(); await f.controller.shutdown();
   expect(f.events.some(e=>e.id==='queued_002' && e.code==='cancelled')).toBe(true);
 });
+
+
+test("Extra High requires observed capability and reaches the exact browser effort", async () => {
+  const f = fixture(); await f.controller.handle({type:'inspect',id:'inspect1'});
+  await f.controller.handle({...request('extra_001'),reasoning:'xhigh'}); await settle();
+  expect(f.turns).toHaveLength(0); expect(f.events.at(-1).code).toBe('effort_unavailable');
+  let effort = ''; const c = new FactoryController({inspect:async()=>({...observed,extraHighAvailable:true}),run:async t=>{effort=t.reasoning!; return 'done';},close:()=>{},emit:()=>{}});
+  await c.handle({type:'inspect',id:'inspect1'}); await c.handle({...request(),reasoning:'xhigh'}); await settle();
+  expect(effort).toBe('xhigh'); await c.shutdown(); await f.controller.shutdown();
+});

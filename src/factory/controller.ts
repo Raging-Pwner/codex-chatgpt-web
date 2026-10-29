@@ -5,7 +5,7 @@ import { CHATGPT_WEB_BACKEND_MODEL } from "../chatgpt-web-models";
 const idSchema = z.string().regex(/^[A-Za-z0-9_-]{6,128}$/);
 const requestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("inspect"), id: idSchema }).strict(),
-  z.object({ type: z.literal("run"), id: idSchema, prompt: z.string().min(1).max(200000), modelFamily: z.enum(["5.6", "6"]), reasoning: z.literal("high") }).strict(),
+  z.object({ type: z.literal("run"), id: idSchema, prompt: z.string().min(1).max(200000), modelFamily: z.enum(["5.6", "6"]), reasoning: z.enum(["high", "xhigh"]) }).strict(),
   z.object({ type: z.literal("cancel"), id: idSchema }).strict(),
   z.object({ type: z.literal("shutdown") }).strict(),
 ]);
@@ -76,6 +76,7 @@ export class FactoryController {
       return;
     }
     if (!this.observed) { this.error(req.id, "inspection_required", "A successful authenticated fresh-chat inspection is required"); return; }
+    if (req.reasoning === "xhigh" && !this.observed.extraHighAvailable) { this.error(req.id, "effort_unavailable", "Extra High is unavailable; no fallback"); return; }
     if (this.jobs.size >= this.limit) { this.error(req.id, "capacity", "Factory concurrency limit reached"); return; }
     const abort = new AbortController();
     const previousPreparation = this.preparationTail;
