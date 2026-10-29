@@ -212,3 +212,26 @@ bun run app:package
 [Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
 
 Also by me: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — local, near-real-time custom voices for ChatGPT and Codex.
+
+
+### Triplet Factory mode (local fork)
+
+`codex-chatgpt-web factory` is an opt-in JSONL command for the SynapseSpeak factory.
+It reads the existing launcher configuration without saving it. It requires automatic
+browser interaction and a signed-in launcher. Build with the pinned Bun version and
+run `dist/runtime/runtime/bun.exe dist/runtime/app/cli.js factory`.
+For source development supply `--browser-helper ABSOLUTE_BUILT_HELPER_PATH`.
+`--diagnostics-dir ABSOLUTE_PATH` keeps browser diagnostics in the caller's private output.
+
+The first stdout message is `{"type":"ready","protocol":"triplet-factory/v1","version":"6.1.17"}`.
+Send `{"type":"inspect","id":"inspect_001"}` and await its result before running work.
+A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"5.6","reasoning":"high"}`.
+Family `6` is also explicit; there is no fallback. Prompts remain exact text, with no
+Codex context, attachments, connector, or local tools. Each run creates a fresh ordinary
+conversation, so account chat history applies. At most three jobs run concurrently;
+capacity rejection is immediate. IDs cannot be reused in one process. Events are progress;
+only a `result` containing `text` means completion. Errors never trigger automatic resend.
+Send `{"type":"cancel","id":"request_001"}` to abort an owned job, or
+`{"type":"shutdown"}` to abort owned work and close this command's helper. EOF also
+shuts it down. This does not stop the launcher or cancel other clients' requests.
+This transport does not certify triplet quality or authorize bulk generation.
