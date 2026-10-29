@@ -235,3 +235,5 @@ Send `{"type":"cancel","id":"request_001"}` to abort an owned job, or
 `{"type":"shutdown"}` to abort owned work and close this command's helper. EOF also
 shuts it down. This does not stop the launcher or cancel other clients' requests.
 This transport does not certify triplet quality or authorize bulk generation.
+
+Factory model selection waits for a visible, enabled effort control inside the active composer, within the existing readiness timeout. A disabled or aria-disabled hydration placeholder does not authorize menu activation; exact model-family and effort verification still precede Send. The 2026-10-30 Synapse pilot reproduced this readiness gap before submission; both delayed-enable DOM regressions and the affected 56-test suite passed after repair.

@@ -2337,10 +2337,15 @@ export class ChatGptBrowserWorker {
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+    // Visible disabled controls are still hydrating. Wait for actionability within
+    // the existing readiness budget instead of treating them as ready for activation.
+    const enabledEffort = composerForm.locator(
+      `:is(${CHATGPT_EFFORT_CONTROL_SELECTOR}):not(:disabled):not([aria-disabled="true"])`,
+    ).filter({ visible: true });
     const effortWaitAbort = new AbortController();
     try {
       const ready = await Promise.race([
-        currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
+        enabledEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
         chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "rate-limit" as const),
         chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "session-expired" as const),
       ]);

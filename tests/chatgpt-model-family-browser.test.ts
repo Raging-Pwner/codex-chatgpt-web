@@ -135,3 +135,31 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("localized position punctuati
     expect(await selectGpt6Pro(picker)).toEqual({ ok: true, label: "Pro", usageModel: "gpt-6-pro", draft: "Draft" });
   }
 }, 60_000);
+
+for (const attribute of ["disabled", "aria-disabled"] as const) {
+  test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)(`model readiness waits for ${attribute} hydration before menu activation`, async () => {
+    const browser = await chromium.launch({ executablePath: process.env.CHATGPT_DOM_TEST_BROWSER, headless: true });
+    try {
+      const page = await browser.newPage();
+      await page.setContent(EXPLICIT_PICKER);
+      await page.locator('form button').evaluate((button, attribute) => {
+        button.setAttribute(attribute, attribute === 'disabled' ? '' : 'true');
+        setTimeout(() => button.removeAttribute(attribute), 4000);
+      }, attribute);
+      const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+      let observedReady = false;
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, 'high',
+        { localToolsEnabled:false, solAvailable:true, extraHighAvailable:true, proAvailable:true },
+        async (checkpoint: string) => {
+          if (checkpoint === 'effort-control-ready') {
+            expect(await page.locator('form button').isEnabled()).toBe(true);
+            expect(await page.locator('form button').getAttribute('aria-disabled')).not.toBe('true');
+            observedReady = true;
+          }
+        }, false, '6');
+      expect(observedReady).toBe(true);
+      expect(mode.selection.label).toBe('6 Sol High');
+      expect(await page.locator('#prompt-textarea').innerText()).toBe('Draft');
+    } finally { await browser.close(); }
+  }, 30000);
+}
