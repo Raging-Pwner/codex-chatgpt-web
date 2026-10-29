@@ -1792,6 +1792,7 @@ class BrowserHost {
   }
 
   syncViewVisibility() {
+    if (this.destroyed || this.window?.isDestroyed?.()) return;
     const windowVisible = this.window.isVisible() && !this.window.isMinimized();
     const visible = windowVisible
       && browserViewVisible(this.visible, this.surfaceActive, this.boundsReady);

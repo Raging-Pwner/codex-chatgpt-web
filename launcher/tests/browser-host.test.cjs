@@ -4294,3 +4294,14 @@ test("off-on-off fresh conversation changes retire completed history before it c
     assert.equal(fixture.turnTabs.get(manual.id), manual);
   }
 });
+
+
+test("visibility synchronization ignores a window already destroyed during tab cleanup", () => {
+  for (const hostDestroyed of [false, true]) {
+    const host = {
+      destroyed: hostDestroyed,
+      window: { isDestroyed: () => true, isVisible() { throw new Error("Object has been destroyed"); } },
+    };
+    assert.doesNotThrow(() => BrowserHost.prototype.syncViewVisibility.call(host));
+  }
+});
