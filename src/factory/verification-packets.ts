@@ -9,7 +9,7 @@ const DUPLICATES = '\n# CONTENT-BOUND DUPLICATE REVIEW\n';
 const MAP_START = 'Empty list only if no neighbors.\n';
 type ObjectValue = Record<string, unknown>;
 type NeighborIdentity = { candidate_id: string; row_sha256: string };
-export type VerificationPacket = { prompt: string; candidateIds: string[]; neighborIdentities: Record<string, NeighborIdentity[]> };
+export type VerificationPacket = { prompt: string; candidateIds: string[]; neighborIdentities: Record<string, NeighborIdentity[]>; contextMode?: "assigned-source-and-all-peer-proposals"; replyFormat?: "indexed-neighbor-verdicts/v1"; legacyPrompt?: string };
 export type VerificationPlan = { logicalPromptSha256: string; candidateIds: string[]; packets: VerificationPacket[] };
 export const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 const object = (x: unknown): x is ObjectValue => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -70,6 +70,7 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
       byIdentity.set(key, value); identities[cid]!.push({ candidate_id: value.candidate_id, row_sha256: value.row_sha256 });
     }
   }
+  let projectContext = false;
   const render = (assigned: string[]): VerificationPacket => {
     const required: Record<string, NeighborIdentity[]> = Object.create(null); const pool = new Map<string, ObjectValue>();
     for (const cid of assigned) {
@@ -78,8 +79,23 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
     }
     const data = { assigned_candidate_ids: assigned, neighbors_by_candidate: required, neighbor_pool: [...pool.values()] };
     const assignment = '\n# VERIFICATION TRANSPORT ASSIGNMENT\nAll original/source and primary-proposal rows above remain read-only review context. Return exactly one verification row for EACH assigned_candidate_ids entry, and no unassigned rows. The neighbor_pool contains each full neighbor once; resolve every neighbors_by_candidate reference by candidate_id AND row_sha256. Return every required duplicate_verdict with its supplied hash and a specific material reason. This lossless transport partition changes output assignment only; all quality, identity, rejection and independent-verification rules remain in force. Do not generate examples, omit evidence or rubber-stamp a proposal.\n';
-    return { prompt: prompt.slice(0, start) + JSON.stringify(candidates) + prompt.slice(parsed.end, mapStart) + JSON.stringify(data) + assignment, candidateIds: assigned, neighborIdentities: required };
+    const fullPrompt = prompt.slice(0, start) + JSON.stringify(candidates) + prompt.slice(parsed.end, mapStart) + JSON.stringify(data) + assignment;
+    if (projectContext) {
+      // Every target is checked against its COMPLETE original in its own packet.
+      // Other targets retain their FULL proposals here for cross-candidate review;
+      // their originals remain in the bound logical input and their own packets.
+      const own = candidates.filter((_entry,index)=>assigned.includes(candidateIds[index]!));
+      const peers = candidates.filter(entry=>!own.includes(entry)).map(entry=>(entry as ObjectValue).primary_audit_proposal);
+      const projected = prompt.slice(0,start)+JSON.stringify(own)+
+        '\n# READ-ONLY PEER PRIMARY PROPOSALS\nEach peer is independently checked against its complete original in its own assigned packet. Use these complete peer proposals for cross-candidate consistency; do not output peer rows here.\n'+JSON.stringify(peers)+
+        prompt.slice(parsed.end,mapStart)+JSON.stringify(data)+assignment;
+      return {prompt:projected,candidateIds:assigned,neighborIdentities:required,contextMode:'assigned-source-and-all-peer-proposals'};
+    }
+    return { prompt:fullPrompt, candidateIds: assigned, neighborIdentities: required };
   };
+  // Preserve every currently viable plan byte-for-byte. Projection is enabled only
+  // if the original whole-batch context cannot fit even a single required target.
+  projectContext = candidateIds.some(cid=>render([cid]).prompt.length>PHYSICAL_PROMPT_LIMIT);
   const packets: VerificationPacket[] = []; let assigned: string[] = []; let decisions = 0;
   for (const cid of candidateIds) {
     const count = identities[cid]!.length;
@@ -91,7 +107,21 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
     assigned.push(cid); decisions += count;
   }
   if (assigned.length) packets.push(render(assigned));
-  return { logicalPromptSha256: sha256(prompt), candidateIds, packets };
+  return { logicalPromptSha256: sha256(prompt), candidateIds, packets:packets.map(indexVerificationPacket) };
+}
+
+/** Index identifiers are immutable transport references, never model-authored judgments. */
+function indexVerificationPacket(packet:VerificationPacket):VerificationPacket {
+  const marker=/Empty list only if no neighbors\.\r?\n/.exec(packet.prompt);
+  if(!marker || marker.index===undefined) invalid('Missing indexed comparison envelope');
+  const start=marker.index+marker[0].length;const parsed=jsonAt(packet.prompt,start);
+  if(!object(parsed.value) || !object(parsed.value.neighbors_by_candidate)) invalid('Invalid indexed comparison inventory');
+  const refs=Object.fromEntries(packet.candidateIds.map(cid=>[cid,packet.neighborIdentities[cid]!.map((ref,other_index)=>({...ref,other_index}))]));
+  const data={...parsed.value,neighbors_by_candidate:refs};
+  const prompt=packet.prompt.slice(0,start)+JSON.stringify(data)+packet.prompt.slice(parsed.end)+
+    '\n# INDEXED DUPLICATE VERDICTS v1 — OUTPUT FORMAT\nFor duplicate_verdicts ONLY, return other_index instead of copying other_id and other_sha256. Each other_index is the explicit zero-based reference in THIS candidate\'s neighbors_by_candidate list. The factory resolves it to the exact supplied ID/hash; never invent or substitute an index. Return exactly one judgment per supplied index, with verdict DISTINCT, DUPLICATE or OVERLAP and a specific material reason. Keep every reviewed triplet field and candidate_id exactly as required above. Example duplicate_verdicts:[{"other_index":0,"verdict":"DISTINCT","reason":"specific material comparison"}]. Do not return other_id or other_sha256 alongside other_index. This format changes identifiers only; all scope, quality, independence and duplicate gates remain.\n';
+  if(prompt.length>PHYSICAL_PROMPT_LIMIT) return packet;
+  return {...packet,prompt,legacyPrompt:packet.prompt,replyFormat:'indexed-neighbor-verdicts/v1'};
 }
 
 export function readPacketResponse(text: string, packet: VerificationPacket, allowMissing = false, quarantine?: (candidateId:string,judgments:unknown[])=>void): Map<string, string> {
@@ -104,6 +134,18 @@ export function readPacketResponse(text: string, packet: VerificationPacket, all
   for (const line of body.split(/\r?\n/).filter(line => line.trim())) {
     let row: unknown; try { row = JSON.parse(line); } catch { invalid('Malformed verification JSONL response'); }
     if (!object(row) || typeof row.candidate_id !== 'string' || !packet.candidateIds.includes(row.candidate_id) || rows.has(row.candidate_id)) invalid('Unassigned or repeated verification response identity');
+    let decoded=false;
+    if(packet.replyFormat==='indexed-neighbor-verdicts/v1' && Array.isArray(row.duplicate_verdicts)){
+      const required=packet.neighborIdentities[row.candidate_id]!;
+      row.duplicate_verdicts=row.duplicate_verdicts.map(value=>{
+        if(!object(value) || !Object.prototype.hasOwnProperty.call(value,'other_index'))return value;
+        const index=value.other_index;
+        if(typeof index!=='number' || !Number.isSafeInteger(index) || index<0 || index>=required.length || Object.keys(value).some(k=>!['other_index','verdict','reason'].includes(k)))invalid('Invalid or conflicting comparison index');
+        decoded=true;const ref=required[index]!;
+        return {other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:value.verdict,reason:value.reason};
+      });
+    }
+
     // Reject an incomplete PASS before spending time on later packets. Substantive
     // REPAIR/REJECT decisions still reach the Python factory's original hold gates.
     if (typeof row.verification_status === 'string' && row.verification_status.toUpperCase() === 'PASS') {
@@ -129,7 +171,7 @@ export function readPacketResponse(text: string, packet: VerificationPacket, all
       if(rejected.length){row.duplicate_verdicts=retained;quarantine?.(row.candidate_id,rejected);}
       if (expected.size && !allowMissing) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
     }
-    rows.set(row.candidate_id, allowMissing && Array.isArray(row.duplicate_verdicts) && row.duplicate_verdicts.length !== (JSON.parse(line).duplicate_verdicts?.length) ? JSON.stringify(row) : line);
+    rows.set(row.candidate_id, decoded || (allowMissing && Array.isArray(row.duplicate_verdicts) && row.duplicate_verdicts.length !== (JSON.parse(line).duplicate_verdicts?.length)) ? JSON.stringify(row) : line);
   }
   if (rows.size !== packet.candidateIds.length) invalid('Incomplete verification packet response');
   return rows;

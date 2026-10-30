@@ -138,7 +138,7 @@ export class FactoryController {
           const responses: Map<string, string>[] = [];
           for (const [index, packet] of plan.packets.entries()) {
             guard(); event("verification_packet_started");
-            const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning);
+            const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning) ?? (packet.legacyPrompt ? this.options.loadPacketResponse?.({...packet,prompt:packet.legacyPrompt,legacyPrompt:undefined,replyFormat:undefined},req.modelFamily,req.reasoning) : undefined);
             let response:string;
             if(saved){
               const {text:prior,...reuseSource}=saved;

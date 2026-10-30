@@ -17,7 +17,7 @@ export function verificationEvidenceWriter(root: string, source: Record<string, 
         const trace = event.packetTraceIds[index];
         if (!trace || !/^[A-Za-z0-9_-]{6,128}$/.test(trace) || packet.prompt.length > PHYSICAL_PROMPT_LIMIT) throw new Error('Invalid physical verification packet');
         writeFileSync(join(folder, trace + '.prompt.txt'), packet.prompt, { encoding:'utf8', flag:'wx' });
-        return { trace_id:trace, candidate_ids:packet.candidateIds, characters:packet.prompt.length,
+        return { trace_id:trace, candidate_ids:packet.candidateIds, characters:packet.prompt.length, review_context:packet.contextMode ?? "full-batch-source-and-proposals", reply_format:packet.replyFormat ?? "full-neighbor-identities",
           prompt_sha256:sha256(packet.prompt), required_neighbor_identities:packet.neighborIdentities };
       });
       const manifestText = JSON.stringify({

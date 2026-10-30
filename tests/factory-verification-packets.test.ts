@@ -114,3 +114,44 @@ test('ambiguous pair gets one independent adjudication with prior concern preser
  let calls=0;const result=await completePacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet,async p=>{calls++;expect(p.prompt).toContain('prior_ambiguous_judgments');expect(p.prompt).toContain('Both concern a broad fixture theme');expect(p.neighborIdentities.candidate_0).toHaveLength(1);return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_0',other_sha256:'0'.repeat(64),verdict:'DUPLICATE',reason:'Fresh independent fixture judgment confirms same complete meaning'}]});});
  expect(calls).toBe(1);expect(JSON.parse(result.get('candidate_0')!).duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
 });
+
+test('large batch context is projected per target while all peer proposals and every required neighbor remain',()=>{
+ const f=fixture(44,80,900);
+ const candidates=f.candidates.map((c,i)=>({...c,original:{...c.original,content:`distinct original ${i}: `+'x'.repeat(4000)}}));
+ const input=f.prompt.replace(JSON.stringify(f.candidates,null,2),JSON.stringify(candidates,null,2));
+ const plan=planVerification(input)!;
+ expect(plan.candidateIds).toHaveLength(44);expect(plan.packets.length).toBeLessThan(44);
+ expect(plan.packets.flatMap(p=>p.candidateIds)).toEqual(candidates.map(c=>c.original.candidate_id));
+ for(const packet of plan.packets){
+  expect(packet.prompt.length).toBeLessThanOrEqual(200000);expect(packet.contextMode).toBe('assigned-source-and-all-peer-proposals');
+  for(const cid of packet.candidateIds){
+   const candidate=candidates.find(c=>c.original.candidate_id===cid)!;
+   expect(packet.prompt).toContain(JSON.stringify(candidate));
+   expect(packet.neighborIdentities[cid]).toHaveLength(80);
+   for(const n of f.map[cid]!)expect(packet.prompt).toContain(JSON.stringify(n));
+  }
+  for(const candidate of candidates)expect(packet.prompt).toContain(JSON.stringify(candidate.primary_audit_proposal));
+ }
+});
+
+test('indexed judgments resolve only against the frozen per-candidate neighbors without changing reviewed content',()=>{
+ const packet={prompt:'fixture',candidateIds:['c'],neighborIdentities:{c:[{candidate_id:'n',row_sha256:'a'.repeat(64)}]},replyFormat:'indexed-neighbor-verdicts/v1' as const};
+ const raw={candidate_id:'c',verification_status:'PASS',en:'unchanged source fixture',duplicate_verdicts:[{other_index:0,verdict:'DUPLICATE',reason:'independent same-meaning finding'}]};
+ const row=JSON.parse(readPacketResponse(JSON.stringify(raw),packet).get('c')!);
+ expect(row.en).toBe(raw.en);expect(row.duplicate_verdicts).toEqual([{other_id:'n',other_sha256:'a'.repeat(64),verdict:'DUPLICATE',reason:'independent same-meaning finding'}]);
+ for(const other_index of [-1,1,0.5,null]) expect(()=>readPacketResponse(JSON.stringify({...raw,duplicate_verdicts:[{...raw.duplicate_verdicts[0],other_index}]}),packet,true)).toThrow();
+ expect(()=>readPacketResponse(JSON.stringify({...raw,duplicate_verdicts:[{...raw.duplicate_verdicts[0],other_id:'forged'}]}),packet)).toThrow();
+ expect(()=>readPacketResponse(JSON.stringify(raw),{...packet,replyFormat:undefined})).toThrow();
+});
+
+
+test('neighbor indices are candidate-local and duplicate index coverage is rejected',()=>{
+ const refs=[{candidate_id:'n1',row_sha256:'a'.repeat(64)},{candidate_id:'n2',row_sha256:'b'.repeat(64)}];
+ const packet={prompt:'fixture',candidateIds:['c1','c2'],neighborIdentities:{c1:refs,c2:[refs[1]!,refs[0]!]},replyFormat:'indexed-neighbor-verdicts/v1' as const};
+ const row=(candidate_id:string)=>({candidate_id,verification_status:'PASS',duplicate_verdicts:[1,0].map(other_index=>({other_index,verdict:'DISTINCT',reason:'independent fixture distinction'}))});
+ const rows=readPacketResponse([row('c1'),row('c2')].map(x=>JSON.stringify(x)).join('\n'),packet);
+ expect(JSON.parse(rows.get('c1')!).duplicate_verdicts.map((v:any)=>v.other_id)).toEqual(['n2','n1']);
+ expect(JSON.parse(rows.get('c2')!).duplicate_verdicts.map((v:any)=>v.other_id)).toEqual(['n1','n2']);
+ const bad=row('c1');bad.duplicate_verdicts[1]!.other_index=1;
+ expect(()=>readPacketResponse([bad,row('c2')].map(x=>JSON.stringify(x)).join('\n'),packet)).toThrow();
+});

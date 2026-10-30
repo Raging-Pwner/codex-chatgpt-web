@@ -311,3 +311,22 @@ similarity alone. Definitive DUPLICATE findings are never overridden by this pat
 A fresh negative or still-uncertain result reaches the original quality hold without
 another attempt to obtain PASS. Reviewed triplet fields stay unchanged. Ordinary
 omission requests remain byte-compatible so prior completed evidence is reused.
+
+If a batch cannot fit even one target with all originals repeated, the planner uses
+assigned-source context for that otherwise-impossible batch. Every assigned target
+retains its complete original and complete primary proposal; every full peer proposal
+is retained for cross-candidate consistency, and every required neighbor body/hash is
+unchanged. Each peer is independently reviewed against its complete original in its
+own assigned packet. The complete original batch remains in the hash-bound logical
+request. No candidate can be accepted until all assigned packets and the Python gates
+pass. The private manifest records this context mode. Already-viable plans retain their
+original partition assignments and exact legacy-cache lookup. The physical limit stays 200,000.
+
+Verification requests now label each required neighbor with a candidate-local zero-based
+`other_index`. GPT returns that index, its verdict and its material reason instead of
+recopying long IDs and hashes. The transport resolves only those identifiers against
+the frozen neighbor inventory; it never supplies judgments or changes triplet fields.
+Raw model output remains in the private ledger, whose manifest records `reply_format`.
+Invalid/conflicting indices and missing coverage fail closed. Exact prior full-identity
+packet responses remain reusable under the original prompt/model/hash checks. Packets
+without enough space for the indexed instructions retain the full-identity format.

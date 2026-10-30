@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { planVerification, sha256 } from "../src/factory/verification-packets";
 import { FactoryController } from "../src/factory/controller";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 
@@ -206,4 +207,26 @@ test('missing-only recovery retains a single parent result and GPT6 High across 
  for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
  expect(supplements).toBe(1);expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
  expect(evidence.some(e=>e.stage==='supplement_plan')).toBe(true);await c.shutdown();
+});
+
+
+test('indexed transport reuses exact legacy cache and normalizes fresh indexed decisions',async()=>{
+ const messages:any[]=[],evidence:any[]=[],lookups:any[]=[];let browserCalls=0;
+ const plan=planVerification(largeVerification())!;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),loadPacketResponse:(packet,family,effort)=>{
+  lookups.push({packet,family,effort});
+  if(packet.prompt!==plan.packets[0]!.legacyPrompt)return undefined;
+  const text=validPacketRows(packet.prompt);
+  return {text,sourceResponsePath:'exact-old.response.txt',sourcePromptPath:'exact-old.prompt.txt',sourceManifestSha256:'a'.repeat(64),responseSha256:sha256(text)};
+ },run:async turn=>{
+  browserCalls++;const text=(await turn.prepare()).text;await turn.onSubmitted!();
+  expect(text).toContain('INDEXED DUPLICATE VERDICTS');
+  return validPacketRows(text).split('\n').map(line=>{const row=JSON.parse(line);row.duplicate_verdicts=row.duplicate_verdicts.map((v:any,other_index:number)=>({other_index,verdict:v.verdict,reason:v.reason}));return JSON.stringify(row);}).join('\n');
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('indexed_cache'),prompt:largeVerification()});
+ for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
+ const result=messages.find(e=>e.type==='result'&&'text' in e);expect(result).toBeDefined();expect(result.text).not.toContain('other_index');expect(result.text).toContain('other_sha256');
+ expect(browserCalls).toBe(plan.packets.length-1);expect(evidence.filter(e=>e.stage==='reused')).toHaveLength(1);
+ expect(lookups[0].packet.replyFormat).toBe('indexed-neighbor-verdicts/v1');expect(lookups[1].packet.replyFormat).toBeUndefined();
+ expect(lookups.every(x=>x.family==='6'&&x.effort==='high')).toBe(true);await c.shutdown();
 });
