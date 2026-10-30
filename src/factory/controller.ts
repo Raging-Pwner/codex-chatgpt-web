@@ -137,6 +137,9 @@ export class FactoryController {
           this.options.packetEvidence!({ stage: "plan", logicalId: req.id, plan, packetTraceIds: traces, modelFamily:req.modelFamily, reasoning:req.reasoning });
           const responses: Map<string, string>[] = [];
           for (const [index, packet] of plan.packets.entries()) {
+            // A chain of fulfilled cache promises otherwise monopolizes microtasks:
+            // helper-ready pipe data and lease heartbeats need a real I/O turn.
+            await new Promise<void>(resolve => setImmediate(resolve));
             guard(); event("verification_packet_started");
             const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning) ?? (packet.legacyPrompt ? this.options.loadPacketResponse?.({...packet,prompt:packet.legacyPrompt,legacyPrompt:undefined,replyFormat:undefined},req.modelFamily,req.reasoning) : undefined);
             let response:string;

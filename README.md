@@ -335,3 +335,5 @@ Plain full-prompt attachment replaces the complete editor selection in a single 
 editing transaction. This prevents a foreign draft restored after the separate clear
 from being appended to the request. Exact composer readback remains mandatory before
 Send. Connector insertion and staged append behavior retain their existing paths.
+
+Cached verification replay yields to native I/O between packets, allowing helper-startup acknowledgements and browser lease heartbeats to run. Cache identity checks, model settings, audit criteria and deadlines are unchanged.

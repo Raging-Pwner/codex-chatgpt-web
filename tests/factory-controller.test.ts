@@ -230,3 +230,16 @@ test('indexed transport reuses exact legacy cache and normalizes fresh indexed d
  expect(lookups[0].packet.replyFormat).toBe('indexed-neighbor-verdicts/v1');expect(lookups[1].packet.replyFormat).toBeUndefined();
  expect(lookups.every(x=>x.family==='6'&&x.effort==='high')).toBe(true);await c.shutdown();
 });
+
+
+test('cached packet replay leaves I/O turns for helper startup and heartbeats',async()=>{
+ const messages:any[]=[];let loads=0,ioObserved=false;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:()=>{},loadPacketResponse:packet=>{
+  if(loads++===0)setImmediate(()=>{ioObserved=true;});else expect(ioObserved).toBe(true);
+  const text=validPacketRows(packet.prompt);
+  return {text,sourceResponsePath:'cached.response',sourcePromptPath:'cached.prompt',sourceManifestSha256:'a'.repeat(64),responseSha256:sha256(text)};
+ },run:async()=>{throw new Error('cached packets must not submit a browser request');}});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('cache_io_replay'),prompt:largeVerification()});
+ for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e||e.type==='error');i++)await settle();
+ expect(loads).toBeGreaterThan(1);expect(messages.some(e=>e.type==='error')).toBe(false);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(true);await c.shutdown();
+});
