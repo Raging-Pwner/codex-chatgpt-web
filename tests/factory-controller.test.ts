@@ -182,7 +182,7 @@ test('cancelling a later verification packet stops the logical request without r
  expect(calls).toBe(2);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);expect(messages.some(e=>e.code==='cancelled')).toBe(true);
 });
 
-test('incomplete PASS duplicate evidence prevents every remaining packet',async()=>{
+test('invalid missing-only response prevents every remaining packet',async()=>{
  const messages:any[]=[],evidence:any[]=[];let calls=0;
  const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),run:async turn=>{
   calls++; const text=(await turn.prepare()).text; await turn.onSubmitted!();
@@ -190,7 +190,20 @@ test('incomplete PASS duplicate evidence prevents every remaining packet',async(
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_missing'),prompt:largeVerification()});
  for(let i=0;i<20&&!messages.some(e=>e.type==='error');i++)await settle();
- expect(calls).toBe(1);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);
+ expect(calls).toBe(2);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);
  expect(messages.at(-1).message).toContain('Incomplete duplicate verdict coverage');
- expect(evidence.map(e=>e.stage)).toEqual(['plan','submitted','result','failure']);await c.shutdown();
+ expect(evidence.map(e=>e.stage)).toEqual(['plan','submitted','result','supplement_plan','submitted','result','failure']);await c.shutdown();
+});
+
+test('missing-only recovery retains a single parent result and GPT6 High across fresh supplementary turns',async()=>{
+ const messages:any[]=[],evidence:any[]=[];let calls=0,supplements=0;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),run:async turn=>{
+  calls++;const text=(await turn.prepare()).text;expect(turn.modelFamily).toBe('6');expect(turn.reasoning).toBe('high');expect(turn.retainConversation).toBe(false);await turn.onPreparedSelected!(false);await turn.onSubmitted!();
+  if(text.includes('# MISSING COMPARISONS ONLY')){supplements++;return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_39',other_sha256:'0'.repeat(62)+'27',verdict:'DISTINCT',reason:'independent fixture evidence'}]});}
+  const rows=validPacketRows(text).split('\n').map(x=>JSON.parse(x));if(calls===1)rows[0].duplicate_verdicts.pop();return rows.map(x=>JSON.stringify(x)).join('\n');
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_recover'),prompt:largeVerification()});
+ for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
+ expect(supplements).toBe(1);expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
+ expect(evidence.some(e=>e.stage==='supplement_plan')).toBe(true);await c.shutdown();
 });

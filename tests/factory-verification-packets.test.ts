@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT } from "../src/factory/verification-packets";
+import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse } from "../src/factory/verification-packets";
 
 function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
@@ -61,4 +61,41 @@ test('PASS missing a required pair stops delivery; substantive repair/reject rem
  expect(readPacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet).size).toBe(rows.length);
  rows[0]!.verification_status='REJECT';
  expect(readPacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet).size).toBe(rows.length);
+});
+
+test('omission recovery preserves valid returned judgments but rejects invented identities',()=>{
+ const packet={prompt:'fixture',candidateIds:['candidate_1'],neighborIdentities:{candidate_1:[{candidate_id:'neighbor_1',row_sha256:'a'.repeat(64)},{candidate_id:'neighbor_2',row_sha256:'b'.repeat(64)}]}};
+ const line=JSON.stringify({candidate_id:'candidate_1',verification_status:'PASS',en:'immutable fixture source',duplicate_verdicts:[{other_id:'neighbor_1',other_sha256:'a'.repeat(64),verdict:'DISTINCT',reason:'different fixture evidence'}]});
+ expect(readPacketResponse(line,packet,true).get('candidate_1')).toBe(line);
+ expect(()=>readPacketResponse(line.replace('neighbor_1','foreign_id'),packet,true)).toThrow('Invalid duplicate verdict identity');
+ expect(()=>readPacketResponse(line,packet)).toThrow('Incomplete duplicate verdict coverage');
+});
+
+test('completion requests only absent pairs, retains source context, and preserves every reviewed field',async()=>{
+ const f=fixture();const p=planVerification(f.prompt)!.packets[0]!;
+ const originals=p.candidateIds.map(candidate_id=>({candidate_id,verification_status:'PASS',reason_codes:[],en:'immutable source fixture',other_field:{value:42},duplicate_verdicts:p.neighborIdentities[candidate_id]!.map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256,verdict:'DISTINCT',reason:'fixture material difference'}))}));
+ originals[0]!.duplicate_verdicts.splice(0,2); let calls=0;
+ const rows=await completePacketResponse(originals.map(r=>JSON.stringify(r)).join('\n'),p,async packet=>{
+  calls++;expect(packet.candidateIds).toEqual(['candidate_0']);expect(packet.neighborIdentities.candidate_0!.map(x=>x.candidate_id)).toEqual(['neighbor_0','neighbor_1']);
+  for(const c of f.candidates)expect(packet.prompt).toContain(JSON.stringify(c));
+  expect(packet.prompt.length).toBeLessThanOrEqual(200000);
+  return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_0',other_sha256:'0'.repeat(64),verdict:'DISTINCT',reason:'independent fixture difference'},{other_id:'neighbor_1',other_sha256:'0'.repeat(63)+'1',verdict:'DUPLICATE',reason:'independent fixture overlap'}]});
+ });
+ expect(calls).toBe(1);const changed=JSON.parse(rows.get('candidate_0')!);
+ expect({...changed,duplicate_verdicts:undefined}).toEqual({...originals[0],duplicate_verdicts:undefined});
+ expect(changed.duplicate_verdicts.slice(0,38)).toEqual(originals[0]!.duplicate_verdicts);expect(changed.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
+ expect(rows.get('candidate_1')).toBe(JSON.stringify(originals[1]));
+});
+
+test('completion cannot rewrite triplets, fabricate absent verdicts, or resend an unchanged request',async()=>{
+ const p=planVerification(fixture().prompt)!.packets[0]!;
+ const rows=p.candidateIds.map(candidate_id=>({candidate_id,verification_status:'PASS',duplicate_verdicts:p.neighborIdentities[candidate_id]!.map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256,verdict:'DISTINCT',reason:'fixture difference'}))}));rows[0]!.duplicate_verdicts.pop();
+ for(const extra of [{en:'forbidden rewrite'},{duplicate_verdicts:[]},{duplicate_verdicts:[{other_id:'foreign',other_sha256:'0'.repeat(64),verdict:'DISTINCT',reason:'invalid fixture'}]}]){
+  let calls=0;await expect(completePacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),p,async()=>{calls++;return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_39',other_sha256:'0'.repeat(62)+'27',verdict:'DISTINCT',reason:'fixture difference'}],...extra});})).rejects.toThrow();
+  if(Object.keys(extra).length===0)throw new Error('fixture needs an invalid response');expect(calls).toBe(1);
+ }
+});
+
+test('small recognized verification also gets complete packet lifecycle',()=>{
+ expect(planVerification(fixture(1,1,10).prompt)!.packets).toHaveLength(1);
 });

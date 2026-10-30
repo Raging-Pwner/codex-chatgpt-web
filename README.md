@@ -263,3 +263,22 @@ response validation now detects incomplete PASS pair inventories immediately,
 before submitting a later packet, while retaining substantive REPAIR/REJECT
 handling in the Python factory. This is a completeness gate, not a semantic
 uniqueness certificate. Raw failed output remains in the private packet ledger.
+
+Missing-verdict recovery is bounded and content-preserving. A valid PASS response
+that omits comparison identities is retained; unknown, repeated or wrong-hash
+judgments still fail. Fresh independent turns request only absent pairs, at most
+24 per turn and 16 supplemental turns per physical packet. They retain the full
+original/source and primary-proposal inventory and the required full neighbor
+bodies. Supplement output may contain only candidate_id and duplicate_verdicts;
+it cannot rewrite translations, metadata, reason codes or review status. Existing
+judgments and every substantive DUPLICATE/REPAIR/REJECT decision remain intact.
+Final exact-coverage and the Python factory's quality gates still apply. A failed
+supplement is not resent automatically.
+
+`verification_packets/` also supports restart reuse of raw model responses only
+when the exact physical prompt, candidate/neighbor inventory, model family, effort,
+submitted evidence and response hash match. Raw reused input/output and its source
+manifest/path/hash are recorded in the new ledger; cache hits never certify a row.
+Small recognized verification requests use the same lifecycle. Ordinary factory
+prompts remain unchanged. This repairs workflow omissions; a genuine quality
+finding still requires factory repair and fresh independent review.

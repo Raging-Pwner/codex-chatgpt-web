@@ -1,5 +1,6 @@
+import type { SavedVerificationResponse } from "./verification-evidence";
 import { z } from "zod";
-import { planVerification, readPacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan } from "./verification-packets";
+import { planVerification, completePacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan, type VerificationPacket } from "./verification-packets";
 import type { BrowserTurn } from "../adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_BACKEND_MODEL } from "../chatgpt-web-models";
 
@@ -13,7 +14,7 @@ const requestSchema = z.discriminatedUnion("type", [
 const inspectionSchema = z.object({ authenticated: z.boolean(), newChat: z.boolean(), solAvailable: z.boolean(), extraHighAvailable: z.boolean(), proAvailable: z.boolean() });
 export type FactoryInspection = z.infer<typeof inspectionSchema>;
 export type FactoryMessage = { type: "result"; id: string; text: string } | { type: "result"; id: string; value: FactoryInspection } | { type: "error"; id: string; message: string; code: string } | { type: "event"; id: string; event: string; text?: string; reused?: boolean; continuation?: boolean };
-export type PacketEvidence = { stage: "plan"; logicalId: string; plan: VerificationPlan; packetTraceIds: string[]; modelFamily: "5.6" | "6"; reasoning: "high" | "xhigh" } | { stage: "submitted" | "result" | "failure" | "complete"; logicalId: string; packetIndex?: number; packetTraceId?: string; text?: string; message?: string; responseSha256?: string };
+export type PacketEvidence = { stage:"supplement_plan"; logicalId:string; packet:VerificationPacket; packetTraceId:string; packetIndex:number; sourceResponseSha256:string } | { stage: "plan"; logicalId: string; plan: VerificationPlan; packetTraceIds: string[]; modelFamily: "5.6" | "6"; reasoning: "high" | "xhigh" } | { stage: "submitted" | "result" | "failure" | "complete" | "reused"; logicalId: string; packetIndex?: number; packetTraceId?: string; text?: string; message?: string; responseSha256?: string; reuseSource?: Omit<SavedVerificationResponse,"text"> };
 export interface FactoryControllerOptions {
   inspect: (signal?: AbortSignal) => Promise<FactoryInspection>;
   run: (turn: BrowserTurn) => Promise<string>;
@@ -21,6 +22,7 @@ export interface FactoryControllerOptions {
   emit: (message: FactoryMessage) => void;
   maxConcurrent?: number;
   packetEvidence?: (record: PacketEvidence) => void;
+  loadPacketResponse?: (packet:VerificationPacket,family:string,effort:string,sourceResponseSha256?:string)=>SavedVerificationResponse|undefined;
 }
 
 /** Owns only injected worker jobs. The stdio reader must continue reading after handle(run). */
@@ -136,9 +138,25 @@ export class FactoryController {
           const responses: Map<string, string>[] = [];
           for (const [index, packet] of plan.packets.entries()) {
             guard(); event("verification_packet_started");
-            const response = await runPhysical(packet.prompt, traces[index]!, index);
+            const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning);
+            let response:string;
+            if(saved){
+              const {text:prior,...reuseSource}=saved;
+              this.options.packetEvidence!({stage:'reused',logicalId:req.id,packetIndex:index,packetTraceId:traces[index]!,reuseSource});
+              event('verification_packet_reused');response=prior;
+            } else response = await runPhysical(packet.prompt, traces[index]!, index);
             this.options.packetEvidence!({ stage: "result", logicalId: req.id, packetIndex: index, packetTraceId: traces[index]!, text: response, responseSha256: sha256(response) });
-            responses.push(readPacketResponse(response, packet));
+            responses.push(await completePacketResponse(response, packet, async (missing, supplementIndex) => {
+              guard(); const trace = traces[index]! + '_s' + (supplementIndex + 1);
+              this.options.packetEvidence!({stage:'supplement_plan',logicalId:req.id,packet:missing,packetTraceId:trace,packetIndex:index,sourceResponseSha256:sha256(response)});
+              event('verification_missing_comparisons');
+              const cached = this.options.loadPacketResponse?.(missing,req.modelFamily,req.reasoning,sha256(response));
+              let extra:string;
+              if(cached){const {text:prior,...reuseSource}=cached;this.options.packetEvidence!({stage:'reused',logicalId:req.id,packetIndex:index,packetTraceId:trace,reuseSource});event('verification_packet_reused');extra=prior;}
+              else extra = await runPhysical(missing.prompt,trace,index);
+              this.options.packetEvidence!({stage:'result',logicalId:req.id,packetIndex:index,packetTraceId:trace,text:extra,responseSha256:sha256(extra)});
+              return extra;
+            }));
             event("verification_packet_completed");
           }
           text = mergePacketResponses(plan, responses);

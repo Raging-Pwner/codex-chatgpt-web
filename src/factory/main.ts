@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { LOGICAL_PROMPT_LIMIT } from "./verification-packets";
-import { verificationEvidenceWriter } from "./verification-evidence";
+import { verificationEvidenceWriter, verificationResponseReader } from "./verification-evidence";
 import { isAbsolute, join, resolve } from "node:path";
 import { format } from "node:util";
 import { loadConfig, providerConfig } from "../config";
@@ -42,7 +42,7 @@ export async function runFactoryMain(args: string[]): Promise<void> {
   const controller = new FactoryController({
     inspect: signal => inspectFactorySession(provider.chatgptWeb!.browserHostDescriptorPath!, undefined, { signal }), run: turn => worker.run(turn),
     close: () => closeChatGptBrowserWorkers(), emit: write,
-    ...(evidenceRoot ? { packetEvidence: verificationEvidenceWriter(evidenceRoot, { bridge_entry_sha256:artifactSha(Bun.main), browser_helper_sha256:artifactSha(helper), version:VERSION }) } : {}),
+    ...(evidenceRoot ? { loadPacketResponse: verificationResponseReader(evidenceRoot), packetEvidence: verificationEvidenceWriter(evidenceRoot, { bridge_entry_sha256:artifactSha(Bun.main), browser_helper_sha256:artifactSha(helper), version:VERSION }) } : {}),
   });
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
   const stop = () => { lines.close(); void controller.shutdown(); };

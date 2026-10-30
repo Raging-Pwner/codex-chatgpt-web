@@ -35,7 +35,7 @@ function jsonAt(text: string, start: number): { value: unknown; end: number } {
 
 /** Large verification only: no removed context, neighbor truncation, or ordinary-prompt rewriting. */
 export function planVerification(prompt: string): VerificationPlan | undefined {
-  if (prompt.length <= PHYSICAL_PROMPT_LIMIT) return undefined;
+  if (prompt.length <= PHYSICAL_PROMPT_LIMIT && !prompt.startsWith(HEADER)) return undefined;
   if (prompt.length > LOGICAL_PROMPT_LIMIT || !prompt.startsWith(HEADER)) invalid('Oversized ordinary prompt; only structured factory verification can be packetized');
   const newline = prompt.includes('\r\n') ? '\r\n' : '\n';
   const packetMarker = PACKET.replaceAll('\n', newline);
@@ -94,7 +94,7 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
   return { logicalPromptSha256: sha256(prompt), candidateIds, packets };
 }
 
-export function readPacketResponse(text: string, packet: VerificationPacket): Map<string, string> {
+export function readPacketResponse(text: string, packet: VerificationPacket, allowMissing = false): Map<string, string> {
   let body = text.trim();
   if (body.startsWith('```')) {
     const fence = /^```(?:jsonl|json)?[ \t]*\n([\s\S]*?)\n?```$/.exec(body);
@@ -109,13 +109,13 @@ export function readPacketResponse(text: string, packet: VerificationPacket): Ma
     if (typeof row.verification_status === 'string' && row.verification_status.toUpperCase() === 'PASS') {
       const required = packet.neighborIdentities[row.candidate_id]!;
       const verdicts = row.duplicate_verdicts;
-      if (!Array.isArray(verdicts) || verdicts.length !== required.length) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
+      if (!Array.isArray(verdicts) || verdicts.length > required.length) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
       const expected = new Set(required.map(n => JSON.stringify([n.candidate_id, n.row_sha256])));
       for (const verdict of verdicts) {
         if (!object(verdict) || typeof verdict.reason !== 'string' || !verdict.reason.trim() || typeof verdict.verdict !== 'string' || !verdict.verdict.trim()
           || !expected.delete(JSON.stringify([verdict.other_id, verdict.other_sha256]))) invalid('Invalid duplicate verdict identity or reason for ' + row.candidate_id);
       }
-      if (expected.size) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
+      if (expected.size && !allowMissing) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
     }
     rows.set(row.candidate_id, line);
   }
@@ -131,4 +131,44 @@ export function mergePacketResponses(plan: VerificationPlan, responses: Map<stri
   }
   if (rows.size !== plan.candidateIds.length || plan.candidateIds.some(cid => !rows.has(cid))) invalid('Logical verification coverage mismatch');
   return '```jsonl\n' + plan.candidateIds.map(cid => rows.get(cid)!).join('\n') + '\n```';
+}
+
+/** Resolve omissions only. Never rewrite reviewed fields or synthesize a pair verdict. */
+export async function completePacketResponse(text: string, packet: VerificationPacket,
+  runMissing: (packet: VerificationPacket, index: number) => Promise<string>): Promise<Map<string,string>> {
+  const rows = readPacketResponse(text, packet, true);
+  let calls = 0;
+  for (const [cid, line] of rows) {
+    const row = JSON.parse(line) as ObjectValue;
+    if (typeof row.verification_status !== 'string' || row.verification_status.toUpperCase() !== 'PASS') continue;
+    const verdicts = row.duplicate_verdicts as ObjectValue[];
+    const returned = new Set(verdicts.map(v => JSON.stringify([v.other_id, v.other_sha256])));
+    const missing = packet.neighborIdentities[cid]!.filter(n => !returned.has(JSON.stringify([n.candidate_id,n.row_sha256])));
+    if (!missing.length) continue;
+    const marker = /Empty list only if no neighbors\.\r?\n/.exec(packet.prompt);
+    if (!marker || marker.index === undefined) invalid('Missing completion evidence envelope');
+    const dataStart = marker.index + marker[0].length;
+    const parsed = jsonAt(packet.prompt, dataStart);
+    if (!object(parsed.value) || !Array.isArray(parsed.value.neighbor_pool)) invalid('Missing pooled comparison evidence');
+    const pool = parsed.value.neighbor_pool as unknown[];
+    for (let offset = 0; offset < missing.length; offset += 24) {
+      if (++calls > 16) invalid('Missing comparison completion budget exceeded');
+      const refs = missing.slice(offset,offset+24);
+      const keys = new Set(refs.map(n=>JSON.stringify([n.candidate_id,n.row_sha256])));
+      const bodies = pool.filter(n=>object(n) && keys.has(JSON.stringify([n.candidate_id,n.row_sha256])));
+      if (bodies.length !== refs.length) invalid('Missing full comparison evidence');
+      const prompt = packet.prompt.slice(0,dataStart) + JSON.stringify({assigned_candidate_ids:[cid],neighbors_by_candidate:{[cid]:refs},neighbor_pool:bodies}) +
+        '\n# MISSING COMPARISONS ONLY — OUTPUT CONTRACT\nThe original/source and primary-proposal inventory above is read-only context. Compare the PRIMARY-AUDIT PROPOSAL for the assigned candidate against EACH listed full neighbor. This request covers only previously omitted comparisons; do not generate, correct, echo or rewrite triplets and do not infer any verdict from an earlier PASS. Return one fenced JSONL row with ONLY candidate_id and duplicate_verdicts. Return exactly '+refs.length+' judgments, one for every supplied (other_id, other_sha256), each with verdict DISTINCT or DUPLICATE and a specific material reason. No extra IDs, hashes or fields. Example shape only: {"candidate_id":"assigned ID","duplicate_verdicts":[{"other_id":"supplied neighbor ID","other_sha256":"supplied hash","verdict":"DISTINCT|DUPLICATE","reason":"specific material comparison"}]}. Never omit, rubber-stamp or invent a judgment.\n';
+      if (prompt.length > PHYSICAL_PROMPT_LIMIT) invalid('Completion prompt exceeds hard physical limit');
+      const completion: VerificationPacket = {prompt,candidateIds:[cid],neighborIdentities:{[cid]:refs}};
+      const result = readPacketResponse(await runMissing(completion,calls-1),completion);
+      const addition = JSON.parse(result.get(cid)!) as ObjectValue;
+      if (Object.keys(addition).some(k=>!['candidate_id','duplicate_verdicts'].includes(k)) || !Array.isArray(addition.duplicate_verdicts)) invalid('Completion attempted to alter reviewed fields');
+      // Reuse strict PASS coverage validation without changing the actual verdicts.
+      readPacketResponse(JSON.stringify({...addition,verification_status:'PASS'}),completion);
+      verdicts.push(...addition.duplicate_verdicts as ObjectValue[]);
+    }
+    rows.set(cid,JSON.stringify(row));
+  }
+  return readPacketResponse([...rows.values()].join('\n'),packet);
 }
