@@ -135,6 +135,8 @@ function largeVerification() {
   return '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(rows)+'\n# CONTENT-BOUND DUPLICATE REVIEW\nEmpty list only if no neighbors.\n'+JSON.stringify(Object.fromEntries(rows.map(r=>[r.original.candidate_id,neighbors])));
 }
 const assigned = (text:string):string[] => JSON.parse(/"assigned_candidate_ids":(\[[^\]]*\])/.exec(text)![1]!);
+const validPacketRows = (text:string) => assigned(text).map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:Array.from({length:40},(_,i)=>({other_id:`neighbor_${i}`,other_sha256:i.toString(16).padStart(64,'0'),verdict:'DISTINCT',reason:'fixture evidence difference'}))})).join('\n');
+
 
 test('large verification uses fresh bounded turns with one final parent result and durable packet evidence',async()=>{
  const messages:any[]=[],evidence:any[]=[],prompts:string[]=[],traces:string[]=[];
@@ -143,7 +145,7 @@ test('large verification uses fresh bounded turns with one final parent result a
   expect(text.length).toBeLessThanOrEqual(200000);expect(turn.modelFamily).toBe('6');expect(turn.reasoning).toBe('high');expect(turn.retainConversation).toBe(false);
   await turn.onPreparedSelected!(false);await turn.onSubmitted!();
   expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(0);
-  return assigned(text).map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:[]})).join('\n');
+  return validPacketRows(text);
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_001'),prompt:largeVerification()});
  for(let i=0;i<20&&!messages.some(e=>e.type==='result'&&'text' in e);i++)await settle();
@@ -171,11 +173,24 @@ test('cancelling a later verification packet stops the logical request without r
  const messages:any[]=[];let calls=0;
  const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:()=>{},run:async turn=>{
   calls++;const text=(await turn.prepare()).text;await turn.onSubmitted!();
-  if(calls===1)return assigned(text).map(candidate_id=>JSON.stringify({candidate_id})).join('\n');
+  if(calls===1)return validPacketRows(text);
   return new Promise<string>((_resolve,reject)=>turn.abortSignal!.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true}));
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_cancel'),prompt:largeVerification()});
  for(let i=0;i<20&&calls<2;i++)await settle();expect(calls).toBe(2);
  await c.handle({type:'cancel',id:'packet_cancel'});await settle();await c.shutdown();
  expect(calls).toBe(2);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);expect(messages.some(e=>e.code==='cancelled')).toBe(true);
+});
+
+test('incomplete PASS duplicate evidence prevents every remaining packet',async()=>{
+ const messages:any[]=[],evidence:any[]=[];let calls=0;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),run:async turn=>{
+  calls++; const text=(await turn.prepare()).text; await turn.onSubmitted!();
+  return assigned(text).map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',duplicate_verdicts:[]})).join('\n');
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_missing'),prompt:largeVerification()});
+ for(let i=0;i<20&&!messages.some(e=>e.type==='error');i++)await settle();
+ expect(calls).toBe(1);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);
+ expect(messages.at(-1).message).toContain('Incomplete duplicate verdict coverage');
+ expect(evidence.map(e=>e.stage)).toEqual(['plan','submitted','result','failure']);await c.shutdown();
 });

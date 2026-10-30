@@ -38,7 +38,7 @@ test('unknown or malformed oversized verification cannot be partly submitted',()
 
 test('packet responses need exact assigned IDs; aggregation never invents missing rows',()=>{
   const plan=planVerification(fixture().prompt)!;
-  const parts=plan.packets.map(p=>readPacketResponse('```jsonl\n'+p.candidateIds.map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:[]})).join('\n')+'\n```',p));
+  const parts=plan.packets.map(p=>readPacketResponse('```jsonl\n'+p.candidateIds.map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:p.neighborIdentities[candidate_id]!.map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256,verdict:'DISTINCT',reason:'fixture evidence difference'}))})).join('\n')+'\n```',p));
   expect(mergePacketResponses(plan,parts)).toContain('candidate_7');
   expect(()=>readPacketResponse('{"candidate_id":"unassigned"}',plan.packets[0]!)).toThrow();
   expect(()=>readPacketResponse('{}',plan.packets[0]!)).toThrow();
@@ -50,4 +50,15 @@ test('Windows persisted verification envelopes preserve coverage',()=>{
   const f=fixture(); const plan=planVerification(f.prompt.replaceAll('\n','\r\n'))!;
   expect(plan.candidateIds).toEqual(f.candidates.map(c=>c.original.candidate_id));
   expect(plan.packets.every(p=>p.prompt.length<=PHYSICAL_PROMPT_LIMIT)).toBe(true);
+});
+
+test('PASS missing a required pair stops delivery; substantive repair/reject remains for core gates',()=>{
+ const packet=planVerification(fixture().prompt)!.packets[0]!;
+ const rows=packet.candidateIds.map(candidate_id=>({candidate_id,verification_status:'PASS',duplicate_verdicts:packet.neighborIdentities[candidate_id]!.map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256,verdict:'DISTINCT',reason:'fixture evidence difference'}))}));
+ rows[0]!.duplicate_verdicts.pop();
+ for(const status of ['PASS','pass','Pass']){ rows[0]!.verification_status=status; expect(()=>readPacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet)).toThrow('Incomplete duplicate verdict coverage'); }
+ rows[0]!.verification_status='REPAIR';
+ expect(readPacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet).size).toBe(rows.length);
+ rows[0]!.verification_status='REJECT';
+ expect(readPacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet).size).toBe(rows.length);
 });

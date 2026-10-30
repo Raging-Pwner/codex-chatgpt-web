@@ -104,6 +104,19 @@ export function readPacketResponse(text: string, packet: VerificationPacket): Ma
   for (const line of body.split(/\r?\n/).filter(line => line.trim())) {
     let row: unknown; try { row = JSON.parse(line); } catch { invalid('Malformed verification JSONL response'); }
     if (!object(row) || typeof row.candidate_id !== 'string' || !packet.candidateIds.includes(row.candidate_id) || rows.has(row.candidate_id)) invalid('Unassigned or repeated verification response identity');
+    // Reject an incomplete PASS before spending time on later packets. Substantive
+    // REPAIR/REJECT decisions still reach the Python factory's original hold gates.
+    if (typeof row.verification_status === 'string' && row.verification_status.toUpperCase() === 'PASS') {
+      const required = packet.neighborIdentities[row.candidate_id]!;
+      const verdicts = row.duplicate_verdicts;
+      if (!Array.isArray(verdicts) || verdicts.length !== required.length) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
+      const expected = new Set(required.map(n => JSON.stringify([n.candidate_id, n.row_sha256])));
+      for (const verdict of verdicts) {
+        if (!object(verdict) || typeof verdict.reason !== 'string' || !verdict.reason.trim() || typeof verdict.verdict !== 'string' || !verdict.verdict.trim()
+          || !expected.delete(JSON.stringify([verdict.other_id, verdict.other_sha256]))) invalid('Invalid duplicate verdict identity or reason for ' + row.candidate_id);
+      }
+      if (expected.size) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
+    }
     rows.set(row.candidate_id, line);
   }
   if (rows.size !== packet.candidateIds.length) invalid('Incomplete verification packet response');

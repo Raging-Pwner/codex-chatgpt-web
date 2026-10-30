@@ -256,3 +256,10 @@ oversized requests and unknown verification envelopes fail closed.
 ledger preserves exact physical prompts and responses, a manifest binding logical
 prompt, candidate/neighbor identities and bridge/helper artifact hashes, and events.
 A ledger write failure blocks completion. Transport tests do not certify model quality.
+
+A monitored 2026-10-30 live packet returned 96 of 98 required pair verdicts for
+one PASS row. The operator stopped the audit; no rows were accepted. Packet
+response validation now detects incomplete PASS pair inventories immediately,
+before submitting a later packet, while retaining substantive REPAIR/REJECT
+handling in the Python factory. This is a completeness gate, not a semantic
+uniqueness certificate. Raw failed output remains in the private packet ledger.
