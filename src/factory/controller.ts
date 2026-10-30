@@ -14,7 +14,7 @@ const requestSchema = z.discriminatedUnion("type", [
 const inspectionSchema = z.object({ authenticated: z.boolean(), newChat: z.boolean(), solAvailable: z.boolean(), extraHighAvailable: z.boolean(), proAvailable: z.boolean() });
 export type FactoryInspection = z.infer<typeof inspectionSchema>;
 export type FactoryMessage = { type: "result"; id: string; text: string } | { type: "result"; id: string; value: FactoryInspection } | { type: "error"; id: string; message: string; code: string } | { type: "event"; id: string; event: string; text?: string; reused?: boolean; continuation?: boolean };
-export type PacketEvidence = { stage:"supplement_plan"; logicalId:string; packet:VerificationPacket; packetTraceId:string; packetIndex:number; sourceResponseSha256:string } | { stage: "plan"; logicalId: string; plan: VerificationPlan; packetTraceIds: string[]; modelFamily: "5.6" | "6"; reasoning: "high" | "xhigh" } | { stage: "submitted" | "result" | "failure" | "complete" | "reused"; logicalId: string; packetIndex?: number; packetTraceId?: string; text?: string; message?: string; responseSha256?: string; reuseSource?: Omit<SavedVerificationResponse,"text"> };
+export type PacketEvidence = { stage:"supplement_plan"; logicalId:string; packet:VerificationPacket; packetTraceId:string; packetIndex:number; sourceResponseSha256:string } | { stage: "plan"; logicalId: string; plan: VerificationPlan; packetTraceIds: string[]; modelFamily: "5.6" | "6"; reasoning: "high" | "xhigh" } | { stage: "submitted" | "result" | "failure" | "complete" | "reused" | "quarantined"; logicalId: string; packetIndex?: number; packetTraceId?: string; text?: string; message?: string; responseSha256?: string; reuseSource?: Omit<SavedVerificationResponse,"text"> };
 export interface FactoryControllerOptions {
   inspect: (signal?: AbortSignal) => Promise<FactoryInspection>;
   run: (turn: BrowserTurn) => Promise<string>;
@@ -156,7 +156,7 @@ export class FactoryController {
               else extra = await runPhysical(missing.prompt,trace,index);
               this.options.packetEvidence!({stage:'result',logicalId:req.id,packetIndex:index,packetTraceId:trace,text:extra,responseSha256:sha256(extra)});
               return extra;
-            }));
+            }, (candidateId,judgments)=>this.options.packetEvidence!({stage:'quarantined',logicalId:req.id,packetIndex:index,packetTraceId:traces[index]!,message:JSON.stringify({candidate_id:candidateId,excluded_distinct_claims:judgments,source_response_sha256:sha256(response)})})));
             event("verification_packet_completed");
           }
           text = mergePacketResponses(plan, responses);

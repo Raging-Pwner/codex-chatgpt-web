@@ -282,3 +282,14 @@ manifest/path/hash are recorded in the new ledger; cache hits never certify a ro
 Small recognized verification requests use the same lifecycle. Ordinary factory
 prompts remain unchanged. This repairs workflow omissions; a genuine quality
 finding still requires factory repair and fresh independent review.
+
+Misassigned positive judgments are recoverable too: an invalid DISTINCT claim
+(unassigned/wrong-hash/repeated identity or missing reason) is quarantined in the
+private ledger and never counts as required evidence. The original raw response
+remains immutable. The factory requests every still-missing required comparison
+from GPT-6 High and applies strict final coverage. DUPLICATE or unknown decisions
+are never discarded by this path. No translation/review field is rewritten by the
+transport. The observed residence packet retained 104 valid judgments, quarantined
+2 unassigned DISTINCT claims, and requires 4 fresh judgments; its other candidate
+already had all 97 required judgments. This repairs response handling without
+removing any required neighbor or weakening final acceptance.

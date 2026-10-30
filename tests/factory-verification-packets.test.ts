@@ -67,7 +67,7 @@ test('omission recovery preserves valid returned judgments but rejects invented 
  const packet={prompt:'fixture',candidateIds:['candidate_1'],neighborIdentities:{candidate_1:[{candidate_id:'neighbor_1',row_sha256:'a'.repeat(64)},{candidate_id:'neighbor_2',row_sha256:'b'.repeat(64)}]}};
  const line=JSON.stringify({candidate_id:'candidate_1',verification_status:'PASS',en:'immutable fixture source',duplicate_verdicts:[{other_id:'neighbor_1',other_sha256:'a'.repeat(64),verdict:'DISTINCT',reason:'different fixture evidence'}]});
  expect(readPacketResponse(line,packet,true).get('candidate_1')).toBe(line);
- expect(()=>readPacketResponse(line.replace('neighbor_1','foreign_id'),packet,true)).toThrow('Invalid duplicate verdict identity');
+ expect(JSON.parse(readPacketResponse(line.replace('neighbor_1','foreign_id'),packet,true).get('candidate_1')!).duplicate_verdicts).toEqual([]);
  expect(()=>readPacketResponse(line,packet)).toThrow('Incomplete duplicate verdict coverage');
 });
 
@@ -98,4 +98,12 @@ test('completion cannot rewrite triplets, fabricate absent verdicts, or resend a
 
 test('small recognized verification also gets complete packet lifecycle',()=>{
  expect(planVerification(fixture(1,1,10).prompt)!.packets).toHaveLength(1);
+});
+
+test('recovery quarantines invalid DISTINCT judgments, never counts them, and never discards a duplicate finding',()=>{
+ const packet={prompt:'fixture',candidateIds:['c'],neighborIdentities:{c:[{candidate_id:'n',row_sha256:'a'.repeat(64)}]}};
+ const line=(verdict:string)=>JSON.stringify({candidate_id:'c',verification_status:'PASS',en:'unchanged fixture',duplicate_verdicts:[{other_id:'unassigned',other_sha256:'b'.repeat(64),verdict,reason:'unassigned fixture comparison'}]});
+ expect(JSON.parse(readPacketResponse(line('DISTINCT'),packet,true).get('c')!).duplicate_verdicts).toEqual([]);
+ expect(()=>readPacketResponse(line('DISTINCT'),packet)).toThrow();
+ expect(()=>readPacketResponse(line('DUPLICATE'),packet,true)).toThrow();
 });

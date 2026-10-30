@@ -94,7 +94,7 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
   return { logicalPromptSha256: sha256(prompt), candidateIds, packets };
 }
 
-export function readPacketResponse(text: string, packet: VerificationPacket, allowMissing = false): Map<string, string> {
+export function readPacketResponse(text: string, packet: VerificationPacket, allowMissing = false, quarantine?: (candidateId:string,judgments:unknown[])=>void): Map<string, string> {
   let body = text.trim();
   if (body.startsWith('```')) {
     const fence = /^```(?:jsonl|json)?[ \t]*\n([\s\S]*?)\n?```$/.exec(body);
@@ -109,15 +109,24 @@ export function readPacketResponse(text: string, packet: VerificationPacket, all
     if (typeof row.verification_status === 'string' && row.verification_status.toUpperCase() === 'PASS') {
       const required = packet.neighborIdentities[row.candidate_id]!;
       const verdicts = row.duplicate_verdicts;
-      if (!Array.isArray(verdicts) || verdicts.length > required.length) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
+      if (!Array.isArray(verdicts)) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
       const expected = new Set(required.map(n => JSON.stringify([n.candidate_id, n.row_sha256])));
+      const retained:unknown[] = [], rejected:unknown[] = [];
       for (const verdict of verdicts) {
-        if (!object(verdict) || typeof verdict.reason !== 'string' || !verdict.reason.trim() || typeof verdict.verdict !== 'string' || !verdict.verdict.trim()
-          || !expected.delete(JSON.stringify([verdict.other_id, verdict.other_sha256]))) invalid('Invalid duplicate verdict identity or reason for ' + row.candidate_id);
+        const key=object(verdict)?JSON.stringify([verdict.other_id,verdict.other_sha256]):'';
+        const valid=object(verdict) && typeof verdict.reason==='string' && !!verdict.reason.trim() && typeof verdict.verdict==='string' && !!verdict.verdict.trim() && expected.has(key);
+        if(!valid){
+          // Invalid DISTINCT claims never count as evidence. A duplicate finding,
+          // unknown decision, or malformed object cannot be silently discarded.
+          if(allowMissing && object(verdict) && verdict.verdict==='DISTINCT'){rejected.push(verdict);continue;}
+          invalid('Invalid duplicate verdict identity or reason for '+row.candidate_id);
+        }
+        expected.delete(key);retained.push(verdict);
       }
+      if(rejected.length){row.duplicate_verdicts=retained;quarantine?.(row.candidate_id,rejected);}
       if (expected.size && !allowMissing) invalid('Incomplete duplicate verdict coverage for ' + row.candidate_id);
     }
-    rows.set(row.candidate_id, line);
+    rows.set(row.candidate_id, allowMissing && Array.isArray(row.duplicate_verdicts) && row.duplicate_verdicts.length !== (JSON.parse(line).duplicate_verdicts?.length) ? JSON.stringify(row) : line);
   }
   if (rows.size !== packet.candidateIds.length) invalid('Incomplete verification packet response');
   return rows;
@@ -135,8 +144,9 @@ export function mergePacketResponses(plan: VerificationPlan, responses: Map<stri
 
 /** Resolve omissions only. Never rewrite reviewed fields or synthesize a pair verdict. */
 export async function completePacketResponse(text: string, packet: VerificationPacket,
-  runMissing: (packet: VerificationPacket, index: number) => Promise<string>): Promise<Map<string,string>> {
-  const rows = readPacketResponse(text, packet, true);
+  runMissing: (packet: VerificationPacket, index: number) => Promise<string>,
+  quarantine?: (candidateId:string,judgments:unknown[])=>void): Promise<Map<string,string>> {
+  const rows = readPacketResponse(text, packet, true, quarantine);
   let calls = 0;
   for (const [cid, line] of rows) {
     const row = JSON.parse(line) as ObjectValue;
