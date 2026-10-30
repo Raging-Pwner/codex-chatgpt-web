@@ -293,3 +293,13 @@ transport. The observed residence packet retained 104 valid judgments, quarantin
 2 unassigned DISTINCT claims, and requires 4 fresh judgments; its other candidate
 already had all 97 required judgments. This repairs response handling without
 removing any required neighbor or weakening final acceptance.
+
+Durable verification evidence lives at `ABSOLUTE_DIAGNOSTICS_PATH.verification/`
+(`verification_packets/` inside it), as a sibling of rotating browser captures.
+Browser cleanup recognizes only its lifecycle records or explicit regular legacy
+checkpoint files; it cannot rotate arbitrary nested ledgers or unrelated folders.
+A 2026-10-30 run exposed the earlier namespace collision and deleted local packet
+receipts before any row was accepted. Remaining files were hash-preserved and the
+incident recorded locally; missing raw judgments must be re-obtained, never recreated
+or silently treated as cached evidence. Generated corpus and primary audit proposals
+were unaffected. This fixes evidence lifecycle ownership, not triplet content.

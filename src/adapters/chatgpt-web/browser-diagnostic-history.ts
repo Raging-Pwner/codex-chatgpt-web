@@ -32,6 +32,9 @@ export function pruneBrowserDiagnosticHistory(root: string): void {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
+      // Only this subsystem's lifecycle records or legacy checkpoint files confer
+      // ownership. Durable audit ledgers and unrelated directories are not captures.
+      if (!state && !readdirSync(path, {withFileTypes:true}).some(entry => entry.isFile() && /^\d+-(?:composer-ready|turn-failed|connector-verification-failed)\.json$/.test(entry.name))) return [];
       if (state?.status === "active" && ownerIsAlive(state.pid)) return [];
       // Existing captures already record failure in their checkpoint filenames.
       // A dead owner without a terminal checkpoint is an interrupted capture.

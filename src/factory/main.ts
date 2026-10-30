@@ -37,7 +37,8 @@ export async function runFactoryMain(args: string[]): Promise<void> {
   const diagnostic = (...values: unknown[]) => { process.stderr.write(format(...values) + "\n"); };
   Object.assign(console, { log: diagnostic, info: diagnostic, warn: diagnostic, error: diagnostic, debug: diagnostic });
   const worker = ChatGptBrowserWorker.forProvider(provider);
-  const evidenceRoot = options.get("--diagnostics-dir");
+  const diagnosticsRoot = options.get("--diagnostics-dir");
+  const evidenceRoot = diagnosticsRoot ? resolve(diagnosticsRoot) + ".verification" : undefined;
   const artifactSha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const controller = new FactoryController({
     inspect: signal => inspectFactorySession(provider.chatgptWeb!.browserHostDescriptorPath!, undefined, { signal }), run: turn => worker.run(turn),

@@ -113,3 +113,11 @@ test("the 100 MB finished-capture budget keeps newer failures before older failu
   expect(existsSync(older)).toBeFalse();
   expect(existsSync(success)).toBeFalse();
 }));
+
+test('diagnostic cleanup never deletes a durable nested ledger or unrelated directory',()=>fixture(root=>{
+ const ledger=join(root,'verification_packets','logical_001');mkdirSync(ledger,{recursive:true});writeFileSync(join(ledger,'manifest.json'),'immutable evidence');
+ const unrelated=join(root,'unrelated-data');mkdirSync(unrelated);writeFileSync(join(unrelated,'important.txt'),'preserve');mkdirSync(join(unrelated,'01-export.json'));
+ utimesSync(join(root,'verification_packets'),baseTime-1000,baseTime-1000);utimesSync(unrelated,baseTime-1000,baseTime-1000);
+ for(let i=0;i<25;i++)trace(root,`success-${i}`,200+i,'completed');pruneBrowserDiagnosticHistory(root);
+ expect(readFileSync(join(ledger,'manifest.json'),'utf8')).toBe('immutable evidence');expect(readFileSync(join(unrelated,'important.txt'),'utf8')).toBe('preserve');
+}));
