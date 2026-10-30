@@ -225,8 +225,8 @@ For source development supply `--browser-helper ABSOLUTE_BUILT_HELPER_PATH`.
 
 The first stdout message is `{"type":"ready","protocol":"triplet-factory/v1","version":"6.1.17"}`.
 Send `{"type":"inspect","id":"inspect_001"}` and await its result before running work.
-A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"5.6","reasoning":"high"}`. Use `"reasoning":"xhigh"` only after observed Extra High capability; unavailable efforts fail without fallback.
-Family `6` is also explicit; there is no fallback. Prompts remain exact text, with no
+A run is `{"type":"run","id":"request_001","prompt":"exact factory prompt","modelFamily":"6","reasoning":"high"}`. Use `"reasoning":"xhigh"` only after observed Extra High capability; unavailable efforts fail without fallback.
+Model family is explicit; there is no fallback. Ordinary prompts remain exact text, with no
 Codex context, attachments, connector, or local tools. Each run creates a fresh ordinary
 conversation, so account chat history applies. Browser preparation and submission are serialized to avoid overlapping native input; submitted responses still run concurrently. At most three jobs run concurrently;
 capacity rejection is immediate. IDs cannot be reused in one process. Events are progress;
@@ -237,3 +237,22 @@ shuts it down. This does not stop the launcher or cancel other clients' requests
 This transport does not certify triplet quality or authorize bulk generation.
 
 Factory model selection waits for a visible, enabled effort control inside the active composer, within the existing readiness timeout. A disabled or aria-disabled hydration placeholder does not authorize menu activation; exact model-family and effort verification still precede Send. The 2026-10-30 Synapse pilot reproduced this readiness gap before submission; both delayed-enable DOM regressions and the affected 56-test suite passed after repair.
+
+Oversized structured SynapseSpeak independent verification requests alone use lossless
+transport partitions (logical limit 8,000,000 characters; each physical prompt remains
+at most 200,000). Every packet retains all original rows and primary proposals as
+read-only context. Assigned candidates reference a pool containing every required
+neighbor body and content hash; nothing is sampled or truncated. Each packet uses a
+fresh independent conversation with the requested model family and effort. At most
+six candidates and a target of 256 duplicate decisions are assigned per packet; a
+single candidate exceeding the hard prompt limit fails closed.
+
+The parent reports submission only once and completes only after every packet has
+returned its exact assigned candidate inventory. Original response rows are merged
+without rewriting verdicts; the Python factory still applies its quality and duplicate
+gates. Cancellation or failure stops remaining packets without resending. Ordinary
+oversized requests and unknown verification envelopes fail closed.
+`--diagnostics-dir` is mandatory for partitioning: its private `verification_packets/ID/`
+ledger preserves exact physical prompts and responses, a manifest binding logical
+prompt, candidate/neighbor identities and bridge/helper artifact hashes, and events.
+A ledger write failure blocks completion. Transport tests do not certify model quality.

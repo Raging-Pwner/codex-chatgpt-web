@@ -128,3 +128,54 @@ test("Extra High requires observed capability and reaches the exact browser effo
   await c.handle({type:'inspect',id:'inspect1'}); await c.handle({...request(),reasoning:'xhigh'}); await settle();
   expect(effort).toBe('xhigh'); await c.shutdown(); await f.controller.shutdown();
 });
+
+function largeVerification() {
+  const rows=Array.from({length:8},(_,i)=>({original:{candidate_id:`candidate_${i}`},primary_audit_proposal:{candidate_id:`candidate_${i}`}}));
+  const neighbors=Array.from({length:40},(_,i)=>({candidate_id:`neighbor_${i}`,row_sha256:i.toString(16).padStart(64,'0'),content:'evidence '.repeat(100)}));
+  return '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(rows)+'\n# CONTENT-BOUND DUPLICATE REVIEW\nEmpty list only if no neighbors.\n'+JSON.stringify(Object.fromEntries(rows.map(r=>[r.original.candidate_id,neighbors])));
+}
+const assigned = (text:string):string[] => JSON.parse(/"assigned_candidate_ids":(\[[^\]]*\])/.exec(text)![1]!);
+
+test('large verification uses fresh bounded turns with one final parent result and durable packet evidence',async()=>{
+ const messages:any[]=[],evidence:any[]=[],prompts:string[]=[],traces:string[]=[];
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),run:async turn=>{
+  const text=(await turn.prepare()).text;prompts.push(text);traces.push(turn.traceId!);
+  expect(text.length).toBeLessThanOrEqual(200000);expect(turn.modelFamily).toBe('6');expect(turn.reasoning).toBe('high');expect(turn.retainConversation).toBe(false);
+  await turn.onPreparedSelected!(false);await turn.onSubmitted!();
+  expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(0);
+  return assigned(text).map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:[]})).join('\n');
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_001'),prompt:largeVerification()});
+ for(let i=0;i<20&&!messages.some(e=>e.type==='result'&&'text' in e);i++)await settle();
+ expect(prompts.length).toBeGreaterThan(1);expect(new Set(traces).size).toBe(prompts.length);
+ expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);
+ expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
+ expect(evidence.filter(e=>e.stage==='result')).toHaveLength(prompts.length);
+ expect(evidence[0].stage).toBe('plan');expect(evidence.at(-1).stage).toBe('complete');
+ for(let i=0;i<8;i++)expect(messages.at(-1).text).toContain(`candidate_${i}`);
+ await c.shutdown();
+});
+
+test('packetized verification fails closed without an evidence sink or on incomplete response',async()=>{
+ for(const missingSink of [true,false]){
+  const messages:any[]=[];let calls=0;
+  const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),...(missingSink?{}:{packetEvidence:()=>{}}),run:async turn=>{calls++;await turn.onSubmitted!();return '{}';}});
+  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_bad'),prompt:largeVerification()});
+  for(let i=0;i<10&&!messages.some(e=>e.type==='error');i++)await settle();
+  expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);expect(messages.at(-1).type).toBe('error');expect(calls).toBe(missingSink?0:1);
+  await c.shutdown();
+ }
+});
+
+test('cancelling a later verification packet stops the logical request without resend or partial result',async()=>{
+ const messages:any[]=[];let calls=0;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:()=>{},run:async turn=>{
+  calls++;const text=(await turn.prepare()).text;await turn.onSubmitted!();
+  if(calls===1)return assigned(text).map(candidate_id=>JSON.stringify({candidate_id})).join('\n');
+  return new Promise<string>((_resolve,reject)=>turn.abortSignal!.addEventListener('abort',()=>reject(new Error('cancelled')),{once:true}));
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_cancel'),prompt:largeVerification()});
+ for(let i=0;i<20&&calls<2;i++)await settle();expect(calls).toBe(2);
+ await c.handle({type:'cancel',id:'packet_cancel'});await settle();await c.shutdown();
+ expect(calls).toBe(2);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);expect(messages.some(e=>e.code==='cancelled')).toBe(true);
+});

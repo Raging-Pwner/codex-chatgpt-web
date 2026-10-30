@@ -1,0 +1,53 @@
+import { expect, test } from "bun:test";
+import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT } from "../src/factory/verification-packets";
+
+function fixture(count = 8, neighbors = 40, bodyChars = 900) {
+  const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
+  const pool = Array.from({length:neighbors}, (_,i) => ({candidate_id:`neighbor_${i}`,row_sha256:i.toString(16).padStart(64,'0'),content:'evidence '.repeat(Math.ceil(bodyChars/9))}));
+  const map = Object.fromEntries(candidates.map(c => [c.original.candidate_id,pool]));
+  const prompt = '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nGROUP_ID: fixture\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(candidates,null,2)+'\n\nThe final acceptance threshold is high.\nReturn one fenced JSONL block.\n# CONTENT-BOUND DUPLICATE REVIEW\nReview every neighbor. Empty list only if no neighbors.\n'+JSON.stringify(map,null,2);
+  return {prompt,candidates,map};
+}
+
+test('oversized verification shares all context and preserves every required neighbor',()=>{
+  const f=fixture();expect(f.prompt.length).toBeGreaterThan(PHYSICAL_PROMPT_LIMIT);
+  const plan=planVerification(f.prompt)!;expect(plan.packets.length).toBeGreaterThan(1);
+  expect(plan.packets.flatMap(p=>p.candidateIds)).toEqual(f.candidates.map(c=>c.original.candidate_id));
+  for(const packet of plan.packets){
+    expect(packet.prompt.length).toBeLessThanOrEqual(PHYSICAL_PROMPT_LIMIT);
+    for(const c of f.candidates) expect(packet.prompt).toContain(JSON.stringify(c));
+    for(const cid of packet.candidateIds){
+      expect(packet.neighborIdentities[cid]).toEqual(f.map[cid]!.map(n=>({candidate_id:n.candidate_id,row_sha256:n.row_sha256})));
+      for(const n of f.map[cid]!) expect(packet.prompt).toContain(JSON.stringify(n));
+    }
+  }
+});
+
+test('ordinary small prompts remain exact and oversized ordinary prompts fail closed',()=>{
+  expect(planVerification('  exact\n ')).toBeUndefined();
+  expect(()=>planVerification('x'.repeat(PHYSICAL_PROMPT_LIMIT+1))).toThrow();
+});
+
+test('unknown or malformed oversized verification cannot be partly submitted',()=>{
+  const f=fixture();
+  expect(()=>planVerification(f.prompt+'\nunknown trailer')).toThrow();
+  expect(()=>planVerification(f.prompt.replace('"candidate_id": "candidate_1"','"candidate_id": "candidate_0"'))).toThrow();
+  expect(()=>planVerification(f.prompt.replace('"neighbor_0"','"different_neighbor"'))).toThrow();
+  const huge=fixture(1,1,10);expect(()=>planVerification(huge.prompt.replace('source context','x'.repeat(PHYSICAL_PROMPT_LIMIT)))).toThrow();
+});
+
+test('packet responses need exact assigned IDs; aggregation never invents missing rows',()=>{
+  const plan=planVerification(fixture().prompt)!;
+  const parts=plan.packets.map(p=>readPacketResponse('```jsonl\n'+p.candidateIds.map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:[]})).join('\n')+'\n```',p));
+  expect(mergePacketResponses(plan,parts)).toContain('candidate_7');
+  expect(()=>readPacketResponse('{"candidate_id":"unassigned"}',plan.packets[0]!)).toThrow();
+  expect(()=>readPacketResponse('{}',plan.packets[0]!)).toThrow();
+  expect(()=>readPacketResponse('prose\n{}',plan.packets[0]!)).toThrow();
+  expect(()=>mergePacketResponses(plan,parts.slice(1))).toThrow();
+});
+
+test('Windows persisted verification envelopes preserve coverage',()=>{
+  const f=fixture(); const plan=planVerification(f.prompt.replaceAll('\n','\r\n'))!;
+  expect(plan.candidateIds).toEqual(f.candidates.map(c=>c.original.candidate_id));
+  expect(plan.packets.every(p=>p.prompt.length<=PHYSICAL_PROMPT_LIMIT)).toBe(true);
+});
