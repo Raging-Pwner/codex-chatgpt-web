@@ -303,3 +303,11 @@ receipts before any row was accepted. Remaining files were hash-preserved and th
 incident recorded locally; missing raw judgments must be re-obtained, never recreated
 or silently treated as cached evidence. Generated corpus and primary audit proposals
 were unaffected. This fixes evidence lifecycle ownership, not triplet content.
+
+An explicit OVERLAP/UNCERTAIN pair judgment can receive one bounded independent
+adjudication. Its exact prior claim and reason accompany both full texts and hashes;
+the factory cannot infer DISTINCT from different wording or DUPLICATE from topic
+similarity alone. Definitive DUPLICATE findings are never overridden by this path.
+A fresh negative or still-uncertain result reaches the original quality hold without
+another attempt to obtain PASS. Reviewed triplet fields stay unchanged. Ordinary
+omission requests remain byte-compatible so prior completed evidence is reused.

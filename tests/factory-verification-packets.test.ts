@@ -107,3 +107,10 @@ test('recovery quarantines invalid DISTINCT judgments, never counts them, and ne
  expect(()=>readPacketResponse(line('DISTINCT'),packet)).toThrow();
  expect(()=>readPacketResponse(line('DUPLICATE'),packet,true)).toThrow();
 });
+
+test('ambiguous pair gets one independent adjudication with prior concern preserved; negative result is never retried away',async()=>{
+ const packet=planVerification(fixture().prompt)!.packets[0]!;
+ const rows=packet.candidateIds.map(candidate_id=>({candidate_id,verification_status:'PASS',en:'immutable fixture',duplicate_verdicts:packet.neighborIdentities[candidate_id]!.map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256,verdict:'DISTINCT',reason:'fixture meaning difference'}))}));rows[0]!.duplicate_verdicts[0]!.verdict='OVERLAP';rows[0]!.duplicate_verdicts[0]!.reason='Both concern a broad fixture theme';
+ let calls=0;const result=await completePacketResponse(rows.map(r=>JSON.stringify(r)).join('\n'),packet,async p=>{calls++;expect(p.prompt).toContain('prior_ambiguous_judgments');expect(p.prompt).toContain('Both concern a broad fixture theme');expect(p.neighborIdentities.candidate_0).toHaveLength(1);return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_0',other_sha256:'0'.repeat(64),verdict:'DUPLICATE',reason:'Fresh independent fixture judgment confirms same complete meaning'}]});});
+ expect(calls).toBe(1);expect(JSON.parse(result.get('candidate_0')!).duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
+});

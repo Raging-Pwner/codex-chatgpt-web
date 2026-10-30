@@ -114,6 +114,9 @@ export function readPacketResponse(text: string, packet: VerificationPacket, all
       const retained:unknown[] = [], rejected:unknown[] = [];
       for (const verdict of verdicts) {
         const key=object(verdict)?JSON.stringify([verdict.other_id,verdict.other_sha256]):'';
+        if(allowMissing && object(verdict) && ['OVERLAP','UNCERTAIN'].includes(String(verdict.verdict)) && expected.has(key) && typeof verdict.reason==='string' && verdict.reason.trim()){
+          rejected.push(verdict);continue;
+        }
         const valid=object(verdict) && typeof verdict.reason==='string' && !!verdict.reason.trim() && typeof verdict.verdict==='string' && !!verdict.verdict.trim() && expected.has(key);
         if(!valid){
           // Invalid DISTINCT claims never count as evidence. A duplicate finding,
@@ -146,7 +149,8 @@ export function mergePacketResponses(plan: VerificationPlan, responses: Map<stri
 export async function completePacketResponse(text: string, packet: VerificationPacket,
   runMissing: (packet: VerificationPacket, index: number) => Promise<string>,
   quarantine?: (candidateId:string,judgments:unknown[])=>void): Promise<Map<string,string>> {
-  const rows = readPacketResponse(text, packet, true, quarantine);
+  const excluded = new Map<string,unknown[]>();
+  const rows = readPacketResponse(text, packet, true, (cid,judgments)=>{excluded.set(cid,judgments);quarantine?.(cid,judgments);});
   let calls = 0;
   for (const [cid, line] of rows) {
     const row = JSON.parse(line) as ObjectValue;
@@ -167,8 +171,9 @@ export async function completePacketResponse(text: string, packet: VerificationP
       const keys = new Set(refs.map(n=>JSON.stringify([n.candidate_id,n.row_sha256])));
       const bodies = pool.filter(n=>object(n) && keys.has(JSON.stringify([n.candidate_id,n.row_sha256])));
       if (bodies.length !== refs.length) invalid('Missing full comparison evidence');
-      const prompt = packet.prompt.slice(0,dataStart) + JSON.stringify({assigned_candidate_ids:[cid],neighbors_by_candidate:{[cid]:refs},neighbor_pool:bodies}) +
+      let prompt = packet.prompt.slice(0,dataStart) + JSON.stringify({assigned_candidate_ids:[cid],neighbors_by_candidate:{[cid]:refs},neighbor_pool:bodies,...((excluded.get(cid)||[]).some(v=>object(v)&&['OVERLAP','UNCERTAIN'].includes(String(v.verdict)))?{prior_ambiguous_judgments:(excluded.get(cid)||[]).filter(v=>object(v)&&['OVERLAP','UNCERTAIN'].includes(String(v.verdict))&&keys.has(JSON.stringify([v.other_id,v.other_sha256])))}:{})}) +
         '\n# MISSING COMPARISONS ONLY — OUTPUT CONTRACT\nThe original/source and primary-proposal inventory above is read-only context. Compare the PRIMARY-AUDIT PROPOSAL for the assigned candidate against EACH listed full neighbor. This request covers only previously omitted comparisons; do not generate, correct, echo or rewrite triplets and do not infer any verdict from an earlier PASS. Return one fenced JSONL row with ONLY candidate_id and duplicate_verdicts. Return exactly '+refs.length+' judgments, one for every supplied (other_id, other_sha256), each with verdict DISTINCT or DUPLICATE and a specific material reason. No extra IDs, hashes or fields. Example shape only: {"candidate_id":"assigned ID","duplicate_verdicts":[{"other_id":"supplied neighbor ID","other_sha256":"supplied hash","verdict":"DISTINCT|DUPLICATE","reason":"specific material comparison"}]}. Never omit, rubber-stamp or invent a judgment.\n';
+      if((excluded.get(cid)||[]).some(v=>object(v)&&['OVERLAP','UNCERTAIN'].includes(String(v.verdict))&&keys.has(JSON.stringify([v.other_id,v.other_sha256])))) prompt += '\n# AMBIGUOUS COMPARISON ADJUDICATION\nWhere prior_ambiguous_judgments is supplied, independently resolve its concern using the complete meanings and information in both texts. Broad thematic similarity alone is not a duplicate finding, and wording differences alone do not establish distinct meaning. Preserve any real duplicate concern: return DUPLICATE for equivalent meaning and UNCERTAIN if the evidence cannot support a final decision. A negative or still-uncertain adjudication remains a quality hold; it will not be retried until PASS.\n';
       if (prompt.length > PHYSICAL_PROMPT_LIMIT) invalid('Completion prompt exceeds hard physical limit');
       const completion: VerificationPacket = {prompt,candidateIds:[cid],neighborIdentities:{[cid]:refs}};
       const result = readPacketResponse(await runMissing(completion,calls-1),completion);
