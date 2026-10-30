@@ -330,3 +330,8 @@ Raw model output remains in the private ledger, whose manifest records `reply_fo
 Invalid/conflicting indices and missing coverage fail closed. Exact prior full-identity
 packet responses remain reusable under the original prompt/model/hash checks. Packets
 without enough space for the indexed instructions retain the full-identity format.
+
+Plain full-prompt attachment replaces the complete editor selection in a single native
+editing transaction. This prevents a foreign draft restored after the separate clear
+from being appended to the request. Exact composer readback remains mandatory before
+Send. Connector insertion and staged append behavior retain their existing paths.

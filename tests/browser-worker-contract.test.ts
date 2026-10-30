@@ -1261,6 +1261,7 @@ test("large Markdown-rich context uses one plain-text editing command before exa
       calls.push(["evaluate", value]);
       calls.push(["evaluateOptions", options]);
       expect(typeof fn).toBe("function");
+      expect((fn as Function).name).toBe("replacePlainTextIntoComposer");
       return true;
     },
   };

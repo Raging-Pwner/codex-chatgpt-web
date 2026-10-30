@@ -121,3 +121,21 @@ test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("a selected connector never a
     }
   } finally { await browser.close(); }
 }, 45_000);
+
+
+test.skipIf(!process.env.CHATGPT_DOM_TEST_BROWSER)("plain full prompt replaces a restored foreign draft atomically", async()=>{
+ const browser=await chromium.launch({executablePath:process.env.CHATGPT_DOM_TEST_BROWSER,headless:true});
+ try{
+  const page=await browser.newPage();await page.setContent('<div id="prompt-textarea" contenteditable="true" role="textbox" style="min-height:40px;width:600px"><p></p></div>');
+  const composer=page.locator('#prompt-textarea');
+  const worker=Object.assign(Object.create(ChatGptBrowserWorker.prototype),{activeComposer:async()=>composer});
+  const stale='other worker draft\n'.repeat(2000);const current='current isolated request\n'+JSON.stringify({data:'literal `markdown` '.repeat(3000)});
+  for(const initial of ['',stale]){
+   await composer.fill('');
+   // A draft restored after the separate clear must not survive full-prompt attachment.
+   await composer.evaluate((element,text)=>{element.textContent=text;},initial);
+   await worker.insertPromptText(page,current,undefined,true);
+   expect(await worker.attachedPromptText(page)).toBe(current);
+  }
+ }finally{await browser.close();}
+},30_000);
