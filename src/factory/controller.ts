@@ -21,6 +21,7 @@ export interface FactoryControllerOptions {
   close: () => void | Promise<void>;
   emit: (message: FactoryMessage) => void;
   maxConcurrent?: number;
+  serializeBrowserTurns?: boolean;
   packetEvidence?: (record: PacketEvidence) => void;
   loadPacketResponse?: (packet:VerificationPacket,family:string,effort:string,sourceResponseSha256?:string)=>SavedVerificationResponse|undefined;
 }
@@ -119,7 +120,7 @@ export class FactoryController {
         onSubmitted: () => {
           if (!submitted) { submitted = true; event("submitted"); } else event("verification_packet_submitted");
           if (plan) this.options.packetEvidence!({ stage: "submitted", logicalId: req.id, packetIndex, packetTraceId: traceId });
-          releasePreparation();
+          if (!this.options.serializeBrowserTurns) releasePreparation();
         },
         onHeartbeat: () => { if (!abort.signal.aborted && !this.stopped) event("heartbeat"); },
         onGenerationProgress: () => { if (!abort.signal.aborted && !this.stopped) event("generation_progress"); },

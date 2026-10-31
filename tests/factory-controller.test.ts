@@ -5,12 +5,12 @@ import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 
 const observed = { authenticated: true, newChat: true, solAvailable: true, extraHighAvailable: false, proAvailable: false };
 const request = (id = "turn_001") => ({ type: "run", id, prompt: "  exact\n ", modelFamily: "6", reasoning: "high" });
-function fixture(autoSubmit = false) {
+function fixture(autoSubmit = false, serializeBrowserTurns = false) {
   const events: any[] = [];
   const turns: BrowserTurn[] = [];
   const pending: { resolve: (s: string) => void; reject: (e: unknown) => void }[] = [];
   let closed = 0;
-  const controller = new FactoryController({ inspect: async () => observed, run: turn => { turns.push(turn); if (autoSubmit) void turn.onSubmitted?.(); return new Promise<string>((resolve, reject) => pending.push({ resolve, reject })); }, close: async () => { closed++; }, emit: e => { events.push(e); } });
+  const controller = new FactoryController({ serializeBrowserTurns, inspect: async () => observed, run: turn => { turns.push(turn); if (autoSubmit) void turn.onSubmitted?.(); return new Promise<string>((resolve, reject) => pending.push({ resolve, reject })); }, close: async () => { closed++; }, emit: e => { events.push(e); } });
   return { controller, events, turns, pending, closed: () => closed };
 }
 const settle = async () => { await new Promise(resolve => setTimeout(resolve, 0)); };
@@ -276,4 +276,26 @@ test('only uncached reviews receive bounded initial output and every complement 
  expect(evidence.filter(e=>e.stage==='supplement_plan')).toHaveLength(4);
  expect(prompts).toHaveLength(5);expect(evidence.at(-1).stage).toBe('complete');
  await c.shutdown();
+});
+
+
+test('serial browser mode holds the lease through the actual response, then runs the next queued job',async()=>{
+ const f=fixture(true,true);await f.controller.handle({type:'inspect',id:'inspect1'});
+ for(let i=1;i<=3;i++)await f.controller.handle(request(`serial_response_${i}`));
+ await settle();await settle();expect(f.turns).toHaveLength(1);
+ f.pending[0]!.resolve('first final');await settle();await settle();expect(f.turns).toHaveLength(2);
+ expect(f.events.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
+ f.pending[1]!.resolve('second final');await settle();await settle();expect(f.turns).toHaveLength(3);
+ f.pending[2]!.resolve('third final');await settle();await f.controller.shutdown();
+ expect(f.events.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(3);
+});
+
+test('cancelling a queued serial response never starts its browser and releases later work safely',async()=>{
+ const f=fixture(true,true);await f.controller.handle({type:'inspect',id:'inspect1'});
+ for(let i=1;i<=3;i++)await f.controller.handle(request(`serial_cancel_${i}`));
+ await settle();await f.controller.handle({type:'cancel',id:'serial_cancel_2'});await settle();
+ expect(f.turns).toHaveLength(1);f.pending[0]!.resolve('first final');await settle();await settle();
+ expect(f.turns).toHaveLength(2);expect(f.turns[1]!.traceId).toBe('serial_cancel_3');
+ f.pending[1]!.resolve('third final');await settle();await f.controller.shutdown();
+ expect(f.events.some(e=>e.type==='result'&&e.id==='serial_cancel_2')).toBe(false);
 });
