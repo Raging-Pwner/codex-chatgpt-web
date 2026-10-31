@@ -349,8 +349,17 @@ headers, prompt bodies or reasoning, and never serve as completion authority.
 Exact completed packet evidence is resolved before changing reply schedules.
 Cached packet prompts remain byte-identical. Uncached reviews with more than 24
 comparisons receive an initial schedule of at most 24 decisions across their assigned
-candidates. All full neighbor evidence remains in the initial request. Near the
-physical limit, only recognized transport prose is shortened; source and evidence
-JSON remain unchanged. Existing sealed supplements review every remaining comparison
+candidates. Every required neighbor remains bound to the complete logical review.
+Near the physical limit, only recognized transport prose is shortened before the
+comparison context is partitioned; source and evidence data are preserved. Existing sealed supplements review every remaining comparison
 in batches of at most 24 before logical completion; they cannot rewrite the reviewed
 row. Negative judgments remain quality holds. Timeouts and acceptance gates are unchanged.
+
+Uncached reviews now split comparison context as well as reply output. The initial
+request contains at most 24 full neighbor bodies; all remaining bodies stay bound
+to the complete logical request and are supplied in sealed, independent follow-ups.
+`comparison_mode: initial-subset-with-sealed-complements/v1` binds the initial
+identity subset alongside the unchanged full required inventory. Initial replies
+cannot claim an unsupplied comparison, supplements cannot rewrite the reviewed row,
+and complete coverage remains mandatory. Completed older full-context packets keep
+their exact prompts and proof lineage. No timeout or audit threshold is relaxed.

@@ -55,3 +55,21 @@ test('resume reuses only hash-bound matching-model physical responses, including
   require('node:fs').writeFileSync(path,'tampered');expect(read(packet,'6','high')).toBeUndefined();
  }finally{rmSync(root,{recursive:true,force:true});}
 });
+
+
+test('deferred initial identity scope is sealed and required for cache reuse',()=>{
+ const root=mkdtempSync(join(tmpdir(),'factory-deferred-'));
+ try{
+  const refs=[{candidate_id:'neighbor_1',row_sha256:'a'.repeat(64)},{candidate_id:'neighbor_2',row_sha256:'b'.repeat(64)}];
+  const packet={prompt:'exact deferred initial prompt',candidateIds:['candidate_1'],neighborIdentities:{candidate_1:refs},initialNeighborIdentities:{candidate_1:refs.slice(0,1)},comparisonMode:'initial-subset-with-sealed-complements/v1' as const,comparisonPrompt:'private complete comparison envelope'};
+  const write=verificationEvidenceWriter(root,{bridge_entry_sha256:'a'.repeat(64),browser_helper_sha256:'b'.repeat(64)});
+  write({stage:'plan',logicalId:'deferred_001',modelFamily:'6',reasoning:'high',plan:{logicalPromptSha256:sha256('logical'),candidateIds:packet.candidateIds,packets:[packet]},packetTraceIds:['physical_001']});
+  const manifest=JSON.parse(readFileSync(join(root,'verification_packets','deferred_001','manifest.json'),'utf8'));
+  expect(manifest.packets[0].comparison_mode).toBe(packet.comparisonMode);expect(manifest.packets[0].initial_neighbor_identities).toEqual(packet.initialNeighborIdentities);
+  expect(JSON.stringify(manifest)).not.toContain(packet.comparisonPrompt);
+  const text='raw fixture result';write({stage:'submitted',logicalId:'deferred_001',packetTraceId:'physical_001'});write({stage:'result',logicalId:'deferred_001',packetTraceId:'physical_001',text,responseSha256:sha256(text)});
+  const read=verificationResponseReader(root);expect(read(packet,'6','high')!.text).toBe(text);
+  expect(read({...packet,initialNeighborIdentities:{candidate_1:refs.slice(1)}},'6','high')).toBeUndefined();
+  expect(read({...packet,comparisonMode:undefined,initialNeighborIdentities:undefined},'6','high')).toBeUndefined();
+ }finally{rmSync(root,{recursive:true,force:true});}
+});

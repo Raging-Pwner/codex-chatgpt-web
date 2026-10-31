@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse, sha256, scheduleInitialComparisonReply } from "../src/factory/verification-packets";
+import { planVerification, readPacketResponse, mergePacketResponses, partitionInitialComparisonContext, PHYSICAL_PROMPT_LIMIT, completePacketResponse, sha256, scheduleInitialComparisonReply } from "../src/factory/verification-packets";
 
 function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
@@ -271,4 +271,31 @@ test('near-limit unindexed scheduling shortens only the recognized assignment pr
   expect(full.en).toBe('immutable');expect(full.duplicate_verdicts).toHaveLength(174);
   expect(full.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
   expect(()=>scheduleInitialComparisonReply({...packet,prompt:packet.prompt+'\nUNRECOGNIZED GATE'})).toThrow();
+});
+
+
+test('deferred comparison context supplies only initial full bodies and seals every complement before PASS',async()=>{
+ const full=planVerification(fixture(1,164,900).prompt)!.packets[0]!;
+ const packet=partitionInitialComparisonContext(full);
+ expect(packet.comparisonMode).toBe('initial-subset-with-sealed-complements/v1');
+ expect(packet.neighborIdentities).toBe(full.neighborIdentities);
+ expect(packet.initialNeighborIdentities!.candidate_0).toHaveLength(24);
+ expect(packet.comparisonPrompt).toContain('neighbor_163');
+ const marker='Empty list only if no neighbors.\n';
+ const jsonStart=packet.prompt.indexOf(marker)+marker.length;
+ const data=JSON.parse(packet.prompt.slice(jsonStart,packet.prompt.indexOf('\n# VERIFICATION TRANSPORT ASSIGNMENT',jsonStart)));
+ expect(data.neighbor_pool).toHaveLength(24);expect(data.neighbors_by_candidate.candidate_0).toHaveLength(24);
+ expect(packet.prompt).not.toContain('"candidate_id":"neighbor_163"');
+ expect(packet.prompt.slice(0,jsonStart)).toBe(full.prompt.slice(0,full.prompt.indexOf(marker)+marker.length));
+ const base={candidate_id:'candidate_0',verification_status:'PASS',en:'immutable fixture',duplicate_verdicts:Array.from({length:24},(_,other_index)=>({other_index,verdict:'DISTINCT',reason:'offline fixture distinction'}))};
+ const calls:number[]=[];
+ const result=await completePacketResponse(JSON.stringify(base),packet,async extra=>{
+  const refs=extra.neighborIdentities.candidate_0!;calls.push(refs.length);
+  for(const ref of refs)expect(extra.prompt).toContain(ref.candidate_id);
+  return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:refs.map((ref,i)=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:calls.length===6&&i===19?'DUPLICATE':'DISTINCT',reason:'offline fixture comparison'}))});
+ });
+ expect(calls).toEqual([24,24,24,24,24,20]);const row=JSON.parse(result.get('candidate_0')!);
+ expect(row.en).toBe('immutable fixture');expect(row.duplicate_verdicts).toHaveLength(164);expect(row.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
+ const foreign={...base,duplicate_verdicts:[{other_index:24,verdict:'DISTINCT',reason:'not supplied'}]};
+ await expect(completePacketResponse(JSON.stringify(foreign),packet,async()=>{throw Error('must not call');})).rejects.toThrow('index');
 });

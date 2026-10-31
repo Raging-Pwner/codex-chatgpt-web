@@ -9,7 +9,7 @@ const DUPLICATES = '\n# CONTENT-BOUND DUPLICATE REVIEW\n';
 const MAP_START = 'Empty list only if no neighbors.\n';
 type ObjectValue = Record<string, unknown>;
 type NeighborIdentity = { candidate_id: string; row_sha256: string };
-export type VerificationPacket = { prompt: string; candidateIds: string[]; neighborIdentities: Record<string, NeighborIdentity[]>; contextMode?: "assigned-source-and-all-peer-proposals"; replyFormat?: "indexed-neighbor-verdicts/v1"; legacyPrompt?: string };
+export type VerificationPacket = { prompt: string; candidateIds: string[]; neighborIdentities: Record<string, NeighborIdentity[]>; contextMode?: "assigned-source-and-all-peer-proposals"; replyFormat?: "indexed-neighbor-verdicts/v1"; legacyPrompt?: string; comparisonMode?: "initial-subset-with-sealed-complements/v1"; initialNeighborIdentities?: Record<string, NeighborIdentity[]>; comparisonPrompt?: string };
 export type VerificationPlan = { logicalPromptSha256: string; candidateIds: string[]; packets: VerificationPacket[] };
 export const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 const object = (x: unknown): x is ObjectValue => typeof x === 'object' && x !== null && !Array.isArray(x);
@@ -181,6 +181,37 @@ export function scheduleInitialComparisonReply(packet: VerificationPacket): Veri
   return {...packet,prompt};
 }
 
+/** Split only comparison evidence; all remaining full bodies are supplied in sealed supplements. */
+export function partitionInitialComparisonContext(packet: VerificationPacket): VerificationPacket {
+  if (packet.comparisonMode) return packet;
+  const scheduled = scheduleInitialComparisonReply(packet);
+  const ids = scheduled.candidateIds;
+  const total = ids.reduce((sum,cid)=>sum+scheduled.neighborIdentities[cid]!.length,0);
+  if (total <= 24) return scheduled;
+  const budgets = ids.map(cid=>Math.min(Math.floor(24/ids.length),scheduled.neighborIdentities[cid]!.length));
+  let remaining=24-budgets.reduce((sum,count)=>sum+count,0);
+  while(remaining>0)for(let i=0;i<ids.length&&remaining>0;i++)if(budgets[i]!<scheduled.neighborIdentities[ids[i]!]!.length){budgets[i]!+=1;remaining-=1;}
+  const marker=/Empty list only if no neighbors\.\r?\n/.exec(scheduled.prompt);
+  if(!marker||marker.index===undefined)invalid('Missing deferred comparison inventory');
+  const start=marker.index+marker[0].length,parsed=jsonAt(scheduled.prompt,start);
+  if(!object(parsed.value)||!object(parsed.value.neighbors_by_candidate)||!Array.isArray(parsed.value.neighbor_pool))invalid('Invalid deferred comparison inventory');
+  const initial:Record<string,NeighborIdentity[]>=Object.create(null);
+  const refs:Record<string,unknown[]>=Object.create(null);const keys=new Set<string>();
+  for(const [i,cid] of ids.entries()){
+    const supplied=parsed.value.neighbors_by_candidate[cid];
+    if(!Array.isArray(supplied)||!isDeepStrictEqual(supplied.map(ref=>object(ref)?{candidate_id:ref.candidate_id,row_sha256:ref.row_sha256}:ref),scheduled.neighborIdentities[cid]))invalid('Deferred comparison binding differs');
+    initial[cid]=scheduled.neighborIdentities[cid]!.slice(0,budgets[i]);refs[cid]=supplied.slice(0,budgets[i]);
+    initial[cid]!.forEach(ref=>keys.add(JSON.stringify([ref.candidate_id,ref.row_sha256])));
+  }
+  const pool=parsed.value.neighbor_pool.filter(body=>object(body)&&keys.has(JSON.stringify([body.candidate_id,body.row_sha256])));
+  if(pool.length!==keys.size)invalid('Missing initial full comparison bodies');
+  const data={...parsed.value,neighbors_by_candidate:refs,neighbor_pool:pool};
+  const prompt=scheduled.prompt.slice(0,start)+JSON.stringify(data)+scheduled.prompt.slice(parsed.end)+
+    '\n# DEFERRED COMPARISON CONTEXT v1\nThis physical request supplies only the scheduled initial full neighbor bodies. Every remaining required comparison is bound in the factory logical input and will receive its complete body in a separate independent review before logical PASS. Do not infer a judgment for an unsupplied neighbor. All original/source and peer proposal context above remains unchanged.\n';
+  if(prompt.length>PHYSICAL_PROMPT_LIMIT)invalid('Deferred initial context still exceeds physical limit');
+  return {...scheduled,prompt,comparisonMode:'initial-subset-with-sealed-complements/v1',initialNeighborIdentities:initial,comparisonPrompt:scheduled.prompt};
+}
+
 /** Index identifiers are immutable transport references, never model-authored judgments. */
 function indexVerificationPacket(packet:VerificationPacket):VerificationPacket {
   const marker=/Empty list only if no neighbors\.\r?\n/.exec(packet.prompt);
@@ -263,7 +294,8 @@ export async function completePacketResponse(text: string, packet: VerificationP
   runMissing: (packet: VerificationPacket, index: number) => Promise<string>,
   quarantine?: (candidateId:string,judgments:unknown[])=>void): Promise<Map<string,string>> {
   const excluded = new Map<string,unknown[]>();
-  const rows = readPacketResponse(text, packet, true, (cid,judgments)=>{excluded.set(cid,judgments);quarantine?.(cid,judgments);});
+  const initial = packet.initialNeighborIdentities ? {...packet,neighborIdentities:packet.initialNeighborIdentities} : packet;
+  const rows = readPacketResponse(text, initial, true, (cid,judgments)=>{excluded.set(cid,judgments);quarantine?.(cid,judgments);});
   let calls = 0;
   for (const [cid, line] of rows) {
     const row = JSON.parse(line) as ObjectValue;
@@ -275,7 +307,10 @@ export async function completePacketResponse(text: string, packet: VerificationP
     const marker = /Empty list only if no neighbors\.\r?\n/.exec(packet.prompt);
     if (!marker || marker.index === undefined) invalid('Missing completion evidence envelope');
     const dataStart = marker.index + marker[0].length;
-    const parsed = jsonAt(packet.prompt, dataStart);
+    const fullPrompt = packet.comparisonPrompt ?? packet.prompt;
+    const fullMarker = /Empty list only if no neighbors\.\r?\n/.exec(fullPrompt);
+    if(!fullMarker || fullMarker.index===undefined)invalid('Missing full deferred comparison envelope');
+    const parsed = jsonAt(fullPrompt,fullMarker.index+fullMarker[0].length);
     if (!object(parsed.value) || !Array.isArray(parsed.value.neighbor_pool)) invalid('Missing pooled comparison evidence');
     const pool = parsed.value.neighbor_pool as unknown[];
     for (let offset = 0; offset < missing.length; offset += 24) {

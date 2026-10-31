@@ -136,7 +136,11 @@ function largeVerification() {
   return '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(rows)+'\n# CONTENT-BOUND DUPLICATE REVIEW\nEmpty list only if no neighbors.\n'+JSON.stringify(Object.fromEntries(rows.map(r=>[r.original.candidate_id,neighbors])));
 }
 const assigned = (text:string):string[] => JSON.parse(/"assigned_candidate_ids":(\[[^\]]*\])/.exec(text)![1]!);
-const validPacketRows = (text:string) => assigned(text).map(candidate_id=>JSON.stringify({candidate_id,verification_status:'PASS',reason_codes:[],duplicate_verdicts:Array.from({length:40},(_,i)=>({other_id:`neighbor_${i}`,other_sha256:i.toString(16).padStart(64,'0'),verdict:'DISTINCT',reason:'fixture evidence difference'}))})).join('\n');
+const validPacketRows = (text:string) => {
+ const marker='Empty list only if no neighbors.\n';const start=text.indexOf(marker)+marker.length;const end=text.indexOf('\n#',start);const data=JSON.parse(text.slice(start,end<0?undefined:end));
+ const supplement=text.includes('# MISSING COMPARISONS ONLY');
+ return assigned(text).map(candidate_id=>JSON.stringify({candidate_id,...(supplement?{}:{verification_status:'PASS',reason_codes:[]}),duplicate_verdicts:data.neighbors_by_candidate[candidate_id].map((ref:any)=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:'DISTINCT',reason:'fixture evidence difference'}))})).join('\n');
+};
 
 
 test('large verification uses fresh bounded turns with one final parent result and durable packet evidence',async()=>{
@@ -149,7 +153,7 @@ test('large verification uses fresh bounded turns with one final parent result a
   return validPacketRows(text);
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_001'),prompt:largeVerification()});
- for(let i=0;i<20&&!messages.some(e=>e.type==='result'&&'text' in e);i++)await settle();
+ for(let i=0;i<100&&!messages.some(e=>e.type==='result'&&'text' in e);i++)await settle();
  expect(prompts.length).toBeGreaterThan(1);expect(new Set(traces).size).toBe(prompts.length);
  expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);
  expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
@@ -200,12 +204,12 @@ test('missing-only recovery retains a single parent result and GPT6 High across 
  const messages:any[]=[],evidence:any[]=[];let calls=0,supplements=0;
  const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),run:async turn=>{
   calls++;const text=(await turn.prepare()).text;expect(turn.modelFamily).toBe('6');expect(turn.reasoning).toBe('high');expect(turn.retainConversation).toBe(false);await turn.onPreparedSelected!(false);await turn.onSubmitted!();
-  if(text.includes('# MISSING COMPARISONS ONLY')){supplements++;return JSON.stringify({candidate_id:'candidate_0',duplicate_verdicts:[{other_id:'neighbor_39',other_sha256:'0'.repeat(62)+'27',verdict:'DISTINCT',reason:'independent fixture evidence'}]});}
+  if(text.includes('# MISSING COMPARISONS ONLY')){supplements++;return validPacketRows(text);}
   const rows=validPacketRows(text).split('\n').map(x=>JSON.parse(x));if(calls===1)rows[0].duplicate_verdicts.pop();return rows.map(x=>JSON.stringify(x)).join('\n');
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('packet_recover'),prompt:largeVerification()});
- for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
- expect(supplements).toBe(1);expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
+ for(let i=0;i<100&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
+ expect(supplements).toBe(16);expect(messages.filter(e=>e.event==='submitted')).toHaveLength(1);expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
  expect(evidence.some(e=>e.stage==='supplement_plan')).toBe(true);await c.shutdown();
 });
 
@@ -220,13 +224,14 @@ test('indexed transport reuses exact legacy cache and normalizes fresh indexed d
   return {text,sourceResponsePath:'exact-old.response.txt',sourcePromptPath:'exact-old.prompt.txt',sourceManifestSha256:'a'.repeat(64),responseSha256:sha256(text)};
  },run:async turn=>{
   browserCalls++;const text=(await turn.prepare()).text;await turn.onSubmitted!();
+  if(text.includes('# MISSING COMPARISONS ONLY'))return validPacketRows(text);
   expect(text).toContain('INDEXED DUPLICATE VERDICTS');
   return validPacketRows(text).split('\n').map(line=>{const row=JSON.parse(line);row.duplicate_verdicts=row.duplicate_verdicts.map((v:any,other_index:number)=>({other_index,verdict:v.verdict,reason:v.reason}));return JSON.stringify(row);}).join('\n');
  }});
  await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('indexed_cache'),prompt:largeVerification()});
- for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
+ for(let i=0;i<100&&!messages.some(e=>e.type==='result'&&'text' in e || e.type==='error');i++)await settle();
  const result=messages.find(e=>e.type==='result'&&'text' in e);expect(result).toBeDefined();expect(result.text).not.toContain('other_index');expect(result.text).toContain('other_sha256');
- expect(browserCalls).toBe(plan.packets.length-1);expect(evidence.filter(e=>e.stage==='reused')).toHaveLength(1);
+ expect(browserCalls).toBe(plan.packets.length-1+4);expect(evidence.filter(e=>e.stage==='reused')).toHaveLength(1);
  expect(lookups[0].packet.replyFormat).toBe('indexed-neighbor-verdicts/v1');expect(lookups[1].packet.replyFormat).toBeUndefined();
  expect(lookups.every(x=>x.family==='6'&&x.effort==='high')).toBe(true);await c.shutdown();
 });

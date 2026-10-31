@@ -18,7 +18,7 @@ export function verificationEvidenceWriter(root: string, source: Record<string, 
         if (!trace || !/^[A-Za-z0-9_-]{6,128}$/.test(trace) || packet.prompt.length > PHYSICAL_PROMPT_LIMIT) throw new Error('Invalid physical verification packet');
         writeFileSync(join(folder, trace + '.prompt.txt'), packet.prompt, { encoding:'utf8', flag:'wx' });
         return { trace_id:trace, candidate_ids:packet.candidateIds, characters:packet.prompt.length, review_context:packet.contextMode ?? "full-batch-source-and-proposals", reply_format:packet.replyFormat ?? "full-neighbor-identities",
-          prompt_sha256:sha256(packet.prompt), required_neighbor_identities:packet.neighborIdentities };
+          prompt_sha256:sha256(packet.prompt), required_neighbor_identities:packet.neighborIdentities, ...(packet.comparisonMode ? {comparison_mode:packet.comparisonMode,initial_neighbor_identities:packet.initialNeighborIdentities} : {}) };
       });
       const manifestText = JSON.stringify({
         protocol:'factory-verification-partitions/v1', logical_id:event.logicalId,
@@ -74,6 +74,7 @@ export function verificationResponseReader(root:string): (packet:VerificationPac
         }) : manifest.packets;
         for(const item of items){
           if(item.prompt_sha256!==promptHash || !/^[A-Za-z0-9_-]{6,128}$/.test(item.trace_id) || !isDeepStrictEqual(item.candidate_ids,packet.candidateIds) || !isDeepStrictEqual(JSON.parse(JSON.stringify(item.required_neighbor_identities)),JSON.parse(JSON.stringify(packet.neighborIdentities)))) continue;
+          if(item.comparison_mode!==packet.comparisonMode || !isDeepStrictEqual(item.initial_neighbor_identities,packet.initialNeighborIdentities ? JSON.parse(JSON.stringify(packet.initialNeighborIdentities)) : undefined))continue;
           const sourcePromptPath=join(dir,item.trace_id+'.prompt.txt');const sourceResponsePath=join(dir,item.trace_id+'.response.txt');
           if(readFileSync(sourcePromptPath,'utf8')!==packet.prompt) continue;
           const text=readFileSync(sourceResponsePath,'utf8');const responseSha256=sha256(text);

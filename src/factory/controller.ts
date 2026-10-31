@@ -1,6 +1,6 @@
 import type { SavedVerificationResponse } from "./verification-evidence";
 import { z } from "zod";
-import { planVerification, scheduleInitialComparisonReply, completePacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan, type VerificationPacket } from "./verification-packets";
+import { planVerification, partitionInitialComparisonContext, scheduleInitialComparisonReply, completePacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan, type VerificationPacket } from "./verification-packets";
 import type { BrowserTurn } from "../adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_BACKEND_MODEL } from "../chatgpt-web-models";
 
@@ -139,8 +139,10 @@ export class FactoryController {
           for (const packet of plan.packets) {
             await new Promise<void>(resolve => setImmediate(resolve)); guard();
             const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning) ?? (packet.legacyPrompt ? this.options.loadPacketResponse?.({...packet,prompt:packet.legacyPrompt,legacyPrompt:undefined,replyFormat:undefined},req.modelFamily,req.reasoning) : undefined);
-            const effective = saved ? packet : scheduleInitialComparisonReply(packet);
-            prepared.push({packet:effective,saved:saved ?? (effective !== packet ? this.options.loadPacketResponse?.(effective,req.modelFamily,req.reasoning) : undefined)});
+            const scheduled = saved ? packet : scheduleInitialComparisonReply(packet);
+            const scheduledSaved = saved ?? (scheduled !== packet ? this.options.loadPacketResponse?.(scheduled,req.modelFamily,req.reasoning) : undefined);
+            const effective = scheduledSaved ? scheduled : partitionInitialComparisonContext(scheduled);
+            prepared.push({packet:effective,saved:scheduledSaved ?? (effective !== scheduled ? this.options.loadPacketResponse?.(effective,req.modelFamily,req.reasoning) : undefined)});
           }
           plan = {...plan,packets:prepared.map(item=>item.packet)};
           const traces = plan.packets.map((_packet, index) => `vfy_${sha256(req.id).slice(0, 32)}_${index + 1}`);
