@@ -363,10 +363,3 @@ identity subset alongside the unchanged full required inventory. Initial replies
 cannot claim an unsupplied comparison, supplements cannot rewrite the reviewed row,
 and complete coverage remains mandatory. Completed older full-context packets keep
 their exact prompts and proof lineage. No timeout or audit threshold is relaxed.
-
-Factory mode queues logical jobs but runs one physical ChatGPT browser turn through
-response completion at a time. The next page startup waits for the previous turn
-to finish, reducing simultaneous browser activity and request bursts. This follows
-an observed history-endpoint 429; it is a controlled recovery measure, not proof
-that rate limiting caused the missing final answers. Audit coverage and deadlines
-remain unchanged. Queued cancellation cannot start a browser request.

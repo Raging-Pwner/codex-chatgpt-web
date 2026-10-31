@@ -41,9 +41,6 @@ export async function runFactoryMain(args: string[]): Promise<void> {
   const evidenceRoot = diagnosticsRoot ? resolve(diagnosticsRoot) + ".verification" : undefined;
   const artifactSha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const controller = new FactoryController({
-    // Keep one physical ChatGPT surface active through completion. Logical jobs
-    // remain queued independently, without overlapping page startup or generation.
-    serializeBrowserTurns: true,
     inspect: signal => inspectFactorySession(provider.chatgptWeb!.browserHostDescriptorPath!, undefined, { signal }), run: turn => worker.run(turn),
     close: () => closeChatGptBrowserWorkers(), emit: write,
     ...(evidenceRoot ? { loadPacketResponse: verificationResponseReader(evidenceRoot), packetEvidence: verificationEvidenceWriter(evidenceRoot, { bridge_entry_sha256:artifactSha(Bun.main), browser_helper_sha256:artifactSha(helper), version:VERSION }) } : {}),
