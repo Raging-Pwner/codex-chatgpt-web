@@ -5,7 +5,7 @@ function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
   const pool = Array.from({length:neighbors}, (_,i) => ({candidate_id:`neighbor_${i}`,row_sha256:i.toString(16).padStart(64,'0'),content:'evidence '.repeat(Math.ceil(bodyChars/9))}));
   const map = Object.fromEntries(candidates.map(c => [c.original.candidate_id,pool]));
-  const prompt = '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION â€” BINDING\nGROUP_ID: fixture\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(candidates,null,2)+'\n\nThe final acceptance threshold is high.\nReturn one fenced JSONL block.\n# CONTENT-BOUND DUPLICATE REVIEW\nReview every neighbor. Empty list only if no neighbors.\n'+JSON.stringify(map,null,2);
+  const prompt = '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nGROUP_ID: fixture\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(candidates,null,2)+'\n\nThe final acceptance threshold is high.\nReturn one fenced JSONL block.\n# CONTENT-BOUND DUPLICATE REVIEW\nReview every neighbor. Empty list only if no neighbors.\n'+JSON.stringify(map,null,2);
   return {prompt,candidates,map};
 }
 
