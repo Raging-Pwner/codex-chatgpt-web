@@ -172,6 +172,9 @@ export class ChatGptStreamProjection {
 type Capture = {
   request: number; submission: number; projection: ChatGptStreamProjection; status?: number;
   pending: Uint8Array[]; pendingBytes: number; streaming: boolean; unavailable: boolean;
+  requestStartedAt: number; responseElapsedMs?: number; terminalElapsedMs?: number;
+  mimeType?: string; canceled?: boolean; networkError?: string;
+  streamCapture?: "enabled" | "protocol_error" | "timeout" | "non_sse";
   enabling?: Promise<void>; terminal?: "finished" | "aborted" | "failed" | "detached";
 };
 
@@ -183,7 +186,7 @@ export class ChatGptStreamDiagnostics {
   private sequence = 0;
   private generation = 0;
 
-  constructor(private readonly report: (state: Record<string, unknown>) => void) {}
+  constructor(private readonly report: (state: Record<string, unknown>) => void, private readonly now: () => number = Date.now) {}
 
   begin(): void { this.submission += 1; }
 
@@ -205,20 +208,26 @@ export class ChatGptStreamDiagnostics {
           || event.request.url !== "https://chatgpt.com/backend-api/f/conversation") return;
         if (this.captures.size >= 12) { this.report({ unavailable: true, reason: "request_limit" }); return; }
         this.captures.set(event.requestId, { request: ++this.sequence, submission: this.submission,
-          projection: new ChatGptStreamProjection(), pending: [], pendingBytes: 0, streaming: false, unavailable: false });
+          requestStartedAt: this.now(), projection: new ChatGptStreamProjection(), pending: [], pendingBytes: 0, streaming: false, unavailable: false });
       });
       session.on("Network.responseReceived", event => {
         if (generation !== this.generation) return;
         const capture = this.captures.get(event.requestId);
         if (!capture) return;
         capture.status = event.response.status;
-        if (event.response.mimeType !== "text/event-stream") return;
+        capture.responseElapsedMs = Math.max(0, this.now() - capture.requestStartedAt);
+        capture.mimeType = ["text/event-stream", "application/json", "text/plain", "text/html"].includes(event.response.mimeType) ? event.response.mimeType : "other";
+        if (event.response.mimeType !== "text/event-stream") { capture.streamCapture = "non_sse"; return; }
         capture.enabling = bounded(session!.send("Network.streamResourceContent", { requestId: event.requestId })).then(result => {
           if (generation !== this.generation) return;
           capture.projection.push(Buffer.from(result.bufferedData, "base64"));
           capture.pending.forEach(bytes => capture.projection.push(bytes));
           capture.streaming = true;
-        }).catch(() => { capture.unavailable = true; }).finally(() => {
+          capture.streamCapture = "enabled";
+        }).catch(error => {
+          capture.unavailable = true;
+          capture.streamCapture = error instanceof Error && error.message === "Diagnostic observation timed out" ? "timeout" : "protocol_error";
+        }).finally(() => {
           capture.pending = [];
           capture.pendingBytes = 0;
         });
@@ -238,13 +247,20 @@ export class ChatGptStreamDiagnostics {
         const capture = this.captures.get(id);
         if (!capture) return;
         capture.terminal = terminal;
+        capture.terminalElapsedMs = Math.max(0, this.now() - capture.requestStartedAt);
         void Promise.resolve(capture.enabling).then(() => {
           if (generation !== this.generation || this.captures.get(id) !== capture) return;
           this.emit(capture); this.captures.delete(id);
         });
       };
       session.on("Network.loadingFinished", event => finish(event.requestId, "finished"));
-      session.on("Network.loadingFailed", event => finish(event.requestId, event.canceled ? "aborted" : "failed"));
+      session.on("Network.loadingFailed", event => {
+        const capture = this.captures.get(event.requestId);
+        if (generation !== this.generation || !capture) return;
+        capture.canceled = event.canceled === true;
+        capture.networkError = typeof event.errorText === "string" && /^net::ERR_[A-Z0-9_]+$/.test(event.errorText) ? event.errorText : "unclassified";
+        finish(event.requestId, event.canceled ? "aborted" : "failed");
+      });
       await bounded(session.send("Network.enable", { maxTotalBufferSize: 1_000_000, maxResourceBufferSize: 512_000, maxPostDataSize: 0 }));
     } catch {
       if (generation === this.generation) this.generation += 1;
@@ -256,6 +272,9 @@ export class ChatGptStreamDiagnostics {
 
   private emit(capture: Capture): void {
     this.report({ request: capture.request, submission: capture.submission, status: capture.status,
+      requestStartedAt: capture.requestStartedAt, responseElapsedMs: capture.responseElapsedMs,
+      terminalElapsedMs: capture.terminalElapsedMs, mimeType: capture.mimeType,
+      canceled: capture.canceled, networkError: capture.networkError, streamCapture: capture.streamCapture,
       terminal: capture.terminal, unavailable: capture.unavailable || !capture.streaming,
       ...capture.projection.snapshot() });
   }
@@ -264,6 +283,7 @@ export class ChatGptStreamDiagnostics {
     this.generation += 1;
     for (const capture of this.captures.values()) {
       capture.terminal ??= "detached";
+      capture.terminalElapsedMs ??= Math.max(0, this.now() - capture.requestStartedAt);
       this.emit(capture);
     }
     this.captures.clear();

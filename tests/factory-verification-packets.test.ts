@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse } from "../src/factory/verification-packets";
+import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse, sha256 } from "../src/factory/verification-packets";
 
 function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
@@ -154,4 +154,20 @@ test('neighbor indices are candidate-local and duplicate index coverage is rejec
  expect(JSON.parse(rows.get('c2')!).duplicate_verdicts.map((v:any)=>v.other_id)).toEqual(['n1','n2']);
  const bad=row('c1');bad.duplicate_verdicts[1]!.other_index=1;
  expect(()=>readPacketResponse([bad,row('c2')].map(x=>JSON.stringify(x)).join('\n'),packet)).toThrow();
+});
+
+
+test("large single-target projection keeps assignments, peers, neighbors and untouched hashes",()=>{
+  const cs=Array.from({length:3},(_,i)=>({original:{candidate_id:`c_${i}`,content:`original_${i} `+'o'.repeat(2800)},primary_audit_proposal:{candidate_id:`c_${i}`,content:`proposal_${i} `+'p'.repeat(700)}}));
+  const ns=Object.fromEntries(cs.map((c,i)=>[c.original.candidate_id,Array.from({length:i===1?164:128},(_,j)=>({candidate_id:`n_${i}_${j}`,row_sha256:(i*1000+j).toString(16).padStart(64,'0'),content:'v'.repeat(i===1?850:500)}))]));
+  const prompt='# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(cs)+'\n# CONTENT-BOUND DUPLICATE REVIEW\nEmpty list only if no neighbors.\n'+JSON.stringify(ns);
+  const packets=planVerification(prompt)!.packets;
+  expect(packets.map(p=>p.candidateIds)).toEqual([['c_0'],['c_1'],['c_2']]);
+  expect(sha256(packets[0]!.prompt)).toBe('b8c3c6d18cf9318ad4c8db7ade34067f77ee8e10225a37cf38e89fe0df9e2acc');
+  expect(sha256(packets[2]!.prompt)).toBe('ede61aacdbb952d968bfac16b8e892fd36cedd639a7c1af3f33391451fbc986e');
+  const p=packets[1]!;expect(p.contextMode).toBe('assigned-source-and-all-peer-proposals');
+  expect(p.prompt.length).toBeLessThan(191885);expect(p.prompt).toContain(JSON.stringify(cs[1]));
+  for(const i of [0,2]){expect(p.prompt).toContain(JSON.stringify(cs[i]!.primary_audit_proposal));expect(p.prompt).not.toContain(JSON.stringify(cs[i]!.original));}
+  expect(p.neighborIdentities.c_1).toEqual(ns.c_1!.map(n=>({candidate_id:n.candidate_id,row_sha256:n.row_sha256})));
+  for(const n of ns.c_1!)expect(p.prompt).toContain(JSON.stringify(n));
 });

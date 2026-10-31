@@ -134,3 +134,29 @@ test("late events from a detached page cannot change a new page's capture with t
   expect(reports).toHaveLength(1);
   expect(reports[0]).toMatchObject({ terminal: "detached", unavailable: true, doneMarker: false });
 });
+
+
+test("owned cancellation diagnostics record MIME and event timing without content",async()=>{
+  let now=1000;const reports:any[]=[];const session=new EventEmitter() as any;
+  session.send=async(method:string)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'main'}}}:method==='Network.streamResourceContent'?{bufferedData:''}:{};
+  session.detach=async()=>{};const observer=new ChatGptStreamDiagnostics(x=>reports.push(x),()=>now);
+  await observer.attach({context:()=>({newCDPSession:async()=>session})} as any);observer.begin();
+  session.emit('Network.requestWillBeSent',{requestId:'owned',frameId:'main',request:{method:'POST',url:'https://chatgpt.com/backend-api/f/conversation'}});
+  now=1025;session.emit('Network.responseReceived',{requestId:'owned',response:{status:200,mimeType:'text/event-stream'}});
+  await new Promise(r=>setImmediate(r));now=1060;session.emit('Network.loadingFailed',{requestId:'owned',canceled:true,errorText:'net::ERR_ABORTED'});
+  await new Promise(r=>setImmediate(r));expect(reports).toHaveLength(1);
+  expect(reports[0]).toMatchObject({requestStartedAt:1000,responseElapsedMs:25,terminalElapsedMs:60,mimeType:'text/event-stream',canceled:true,networkError:'net::ERR_ABORTED',streamCapture:'enabled'});
+  await observer.dispose();
+});
+
+test("capture failure details are categorical and exclude private error strings",async()=>{
+  const reports:any[]=[];const session=new EventEmitter() as any;
+  session.send=async(method:string)=>{if(method==='Page.getFrameTree')return{frameTree:{frame:{id:'main'}}};if(method==='Network.streamResourceContent')throw new Error('PRIVATE capture payload');return{};};
+  session.detach=async()=>{};const observer=new ChatGptStreamDiagnostics(x=>reports.push(x));
+  await observer.attach({context:()=>({newCDPSession:async()=>session})} as any);observer.begin();
+  session.emit('Network.requestWillBeSent',{requestId:'owned',frameId:'main',request:{method:'POST',url:'https://chatgpt.com/backend-api/f/conversation'}});
+  session.emit('Network.responseReceived',{requestId:'owned',response:{status:200,mimeType:'text/event-stream'}});
+  session.emit('Network.loadingFailed',{requestId:'owned',canceled:false,errorText:'PRIVATE network payload'});
+  await new Promise(r=>setImmediate(r));expect(reports[0]).toMatchObject({streamCapture:'protocol_error',networkError:'unclassified',canceled:false,unavailable:true});
+  expect(JSON.stringify(reports)).not.toContain('PRIVATE');await observer.dispose();
+});

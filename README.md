@@ -337,3 +337,11 @@ from being appended to the request. Exact composer readback remains mandatory be
 Send. Connector insertion and staged append behavior retain their existing paths.
 
 Cached verification replay yields to native I/O between packets, allowing helper-startup acknowledgements and browser lease heartbeats to run. Cache identity checks, model settings, audit criteria and deadlines are unchanged.
+
+Factory verification preserves assignments and unchanged packet hashes when using
+the existing complete-source/all-peer-proposals projection for large single-target
+packets. The 190,000-character headroom threshold is experimental, not a provider
+limit. Assigned source, complete peer proposals and every required neighbor remain
+present; no evidence or acceptance gate is truncated. Passive owned-stream logs add
+MIME/status, timing and sanitized network/capture categories without retaining
+headers, prompt bodies or reasoning, and never serve as completion authority.

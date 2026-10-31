@@ -107,7 +107,17 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
     assigned.push(cid); decisions += count;
   }
   if (assigned.length) packets.push(render(assigned));
-  return { logicalPromptSha256: sha256(prompt), candidateIds, packets:packets.map(indexVerificationPacket) };
+  return { logicalPromptSha256: sha256(prompt), candidateIds, packets:packets.map(packet => {
+    const indexed = indexVerificationPacket(packet);
+    // Preserve assignments and untouched cache hashes; headroom is experimental.
+    if (indexed.contextMode || indexed.candidateIds.length !== 1 || indexed.prompt.length <= 190_000) return indexed;
+    const prior = projectContext;
+    try {
+      projectContext = true;
+      const projected = indexVerificationPacket(render(indexed.candidateIds));
+      return projected.prompt.length < indexed.prompt.length ? projected : indexed;
+    } finally { projectContext = prior; }
+  }) };
 }
 
 /** Index identifiers are immutable transport references, never model-authored judgments. */
