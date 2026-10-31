@@ -1,6 +1,6 @@
 import type { SavedVerificationResponse } from "./verification-evidence";
 import { z } from "zod";
-import { planVerification, completePacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan, type VerificationPacket } from "./verification-packets";
+import { planVerification, scheduleInitialComparisonReply, completePacketResponse, mergePacketResponses, LOGICAL_PROMPT_LIMIT, PHYSICAL_PROMPT_LIMIT, sha256, type VerificationPlan, type VerificationPacket } from "./verification-packets";
 import type { BrowserTurn } from "../adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_BACKEND_MODEL } from "../chatgpt-web-models";
 
@@ -133,6 +133,16 @@ export class FactoryController {
       try {
         guard(); let text: string;
         if (plan) {
+          // Resolve exact completed evidence before changing any reply schedule.
+          // Only uncached work is repartitioned; sealed prior packet bytes stay intact.
+          const prepared: {packet:VerificationPacket;saved?:SavedVerificationResponse}[] = [];
+          for (const packet of plan.packets) {
+            await new Promise<void>(resolve => setImmediate(resolve)); guard();
+            const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning) ?? (packet.legacyPrompt ? this.options.loadPacketResponse?.({...packet,prompt:packet.legacyPrompt,legacyPrompt:undefined,replyFormat:undefined},req.modelFamily,req.reasoning) : undefined);
+            const effective = saved ? packet : scheduleInitialComparisonReply(packet);
+            prepared.push({packet:effective,saved:saved ?? (effective !== packet ? this.options.loadPacketResponse?.(effective,req.modelFamily,req.reasoning) : undefined)});
+          }
+          plan = {...plan,packets:prepared.map(item=>item.packet)};
           const traces = plan.packets.map((_packet, index) => `vfy_${sha256(req.id).slice(0, 32)}_${index + 1}`);
           this.options.packetEvidence!({ stage: "plan", logicalId: req.id, plan, packetTraceIds: traces, modelFamily:req.modelFamily, reasoning:req.reasoning });
           const responses: Map<string, string>[] = [];
@@ -141,7 +151,7 @@ export class FactoryController {
             // helper-ready pipe data and lease heartbeats need a real I/O turn.
             await new Promise<void>(resolve => setImmediate(resolve));
             guard(); event("verification_packet_started");
-            const saved = this.options.loadPacketResponse?.(packet,req.modelFamily,req.reasoning) ?? (packet.legacyPrompt ? this.options.loadPacketResponse?.({...packet,prompt:packet.legacyPrompt,legacyPrompt:undefined,replyFormat:undefined},req.modelFamily,req.reasoning) : undefined);
+            const saved = prepared[index]!.saved;
             let response:string;
             if(saved){
               const {text:prior,...reuseSource}=saved;

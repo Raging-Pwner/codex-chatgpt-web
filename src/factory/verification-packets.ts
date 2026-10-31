@@ -116,14 +116,69 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
       projectContext = true;
       const projected = indexVerificationPacket(render(indexed.candidateIds));
       if (projected.prompt.length >= indexed.prompt.length) return indexed;
-      const count = projected.neighborIdentities[projected.candidateIds[0]!]!.length;
-      if (count <= 24 || projected.replyFormat !== 'indexed-neighbor-verdicts/v1') return projected;
-      // Keep all comparison evidence in the initial review. Only its output is
-      // scheduled: existing sealed supplement calls must finish every other pair.
-      const scheduled = projected.prompt + '\n# BOUNDED INITIAL COMPARISON REPLY\nFor this INITIAL physical reply only, return the complete independently reviewed row and duplicate_verdicts for other_index 0 through 23. This initial output schedule supersedes the earlier instruction to emit every comparison in one reply. All supplied neighbors remain full read-only evidence. Do not omit any material concern: preserve REPAIR, REJECT, DUPLICATE or unresolved findings as required. The factory will independently request each remaining required comparison in bounded follow-up calls, and cannot deliver a complete logical PASS until every required comparison has an actual judgment. Do not emit remaining indices in this initial reply or invent their results. Every source-fidelity, identity, quality and negative-finding rule remains unchanged.\n';
-      return scheduled.length <= PHYSICAL_PROMPT_LIMIT ? {...projected,prompt:scheduled} : projected;
+      return scheduleInitialComparisonReply(projected);
     } finally { projectContext = prior; }
   }) };
+}
+
+
+/** Output scheduling only: all review evidence and final coverage requirements stay intact. */
+export function scheduleInitialComparisonReply(packet: VerificationPacket): VerificationPacket {
+  const marker = '\n# BOUNDED INITIAL COMPARISON REPLY\n';
+  if (packet.prompt.includes(marker)) return packet;
+  const ids = packet.candidateIds;
+  if (!ids.length || new Set(ids).size !== ids.length
+      || ids.some(cid => !Array.isArray(packet.neighborIdentities[cid]))) invalid('Invalid initial comparison assignment');
+  const total = ids.reduce((sum,cid) => sum + packet.neighborIdentities[cid]!.length,0);
+  if (total <= 24) return packet;
+  const perCandidate = Math.floor(24 / ids.length);
+  const budgets = ids.map(cid => Math.min(perCandidate,packet.neighborIdentities[cid]!.length));
+  let remaining = 24 - budgets.reduce((sum,count) => sum + count,0);
+  while (remaining > 0) {
+    for (let i=0;i<ids.length && remaining>0;i++) {
+      if (budgets[i]! < packet.neighborIdentities[ids[i]!]!.length) { budgets[i]! += 1; remaining -= 1; }
+    }
+  }
+  let suffix: string;
+  if (ids.length === 1 && packet.replyFormat === 'indexed-neighbor-verdicts/v1') {
+    // Exact historical bytes preserve the already completed projected single-target cache.
+    suffix = '\n# BOUNDED INITIAL COMPARISON REPLY\nFor this INITIAL physical reply only, return the complete independently reviewed row and duplicate_verdicts for other_index 0 through 23. This initial output schedule supersedes the earlier instruction to emit every comparison in one reply. All supplied neighbors remain full read-only evidence. Do not omit any material concern: preserve REPAIR, REJECT, DUPLICATE or unresolved findings as required. The factory will independently request each remaining required comparison in bounded follow-up calls, and cannot deliver a complete logical PASS until every required comparison has an actual judgment. Do not emit remaining indices in this initial reply or invent their results. Every source-fidelity, identity, quality and negative-finding rule remains unchanged.\n';
+  } else {
+    const indexed = packet.replyFormat === 'indexed-neighbor-verdicts/v1';
+    const schedule = Object.fromEntries(ids.map((cid,i) => [cid,indexed
+      ? Array.from({length:budgets[i]!},(_,other_index)=>other_index)
+      : packet.neighborIdentities[cid]!.slice(0,budgets[i]!).map(ref=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256}))]));
+    suffix = marker + 'For this INITIAL physical reply only, return the complete independently reviewed row for EACH assigned candidate, and duplicate_verdicts ONLY for that candidate\'s entries in the schedule below. '
+      + (indexed ? 'Numbers are candidate-local other_index values. ' : 'Objects identify the exact supplied other_id and other_sha256. ')
+      + 'An empty schedule means return duplicate_verdicts:[] for that candidate. This initial output schedule supersedes the earlier instruction to emit every comparison in one reply. '
+      + 'All supplied neighbors remain full read-only evidence. Do not omit any material concern: preserve REPAIR, REJECT, DUPLICATE or unresolved findings as required. '
+      + 'The factory will independently request every remaining required comparison in bounded follow-up calls, and cannot deliver a complete logical PASS until every required comparison has an actual judgment. '
+      + 'Do not emit unscheduled comparisons in this initial reply or invent their results. Every source-fidelity, identity, quality and negative-finding rule remains unchanged.\n'
+      + 'Candidate-local initial comparison schedule (JSON):\n' + JSON.stringify(schedule) + '\n';
+  }
+  let prompt = packet.prompt + suffix;
+  if (prompt.length > PHYSICAL_PROMPT_LIMIT && packet.replyFormat !== 'indexed-neighbor-verdicts/v1') {
+    // Only replace the exact known transport prose after the complete JSON value.
+    // Never shorten source, peer or neighbor data, or an unfamiliar instruction.
+    const assignment = '\n# VERIFICATION TRANSPORT ASSIGNMENT\nAll original/source and primary-proposal rows above remain read-only review context. Return exactly one verification row for EACH assigned_candidate_ids entry, and no unassigned rows. The neighbor_pool contains each full neighbor once; resolve every neighbors_by_candidate reference by candidate_id AND row_sha256. Return every required duplicate_verdict with its supplied hash and a specific material reason. This lossless transport partition changes output assignment only; all quality, identity, rejection and independent-verification rules remain in force. Do not generate examples, omit evidence or rubber-stamp a proposal.\n';
+    const boundary = /Empty list only if no neighbors\.\r?\n/.exec(packet.prompt);
+    if (boundary && boundary.index !== undefined) {
+      const parsed = jsonAt(packet.prompt,boundary.index+boundary[0].length);
+      if (packet.prompt.slice(parsed.end) === assignment) {
+        const selection = ids.length === 1 ? 'first 24 neighbors_by_candidate references only, in supplied order. '
+          : 'first N neighbors_by_candidate references per candidate; N in assigned_candidate_ids order is '+JSON.stringify(budgets)+'. ';
+        const compact = '\n# VERIFICATION TRANSPORT ASSIGNMENT\n' + marker
+          + 'Return one independently reviewed row per assigned_candidate_ids; no peer rows. Initial reply: ' + selection
+          + 'Use exact other_id/other_sha256. All full source/peer/neighbor data remains required read-only evidence. '
+          + 'Preserve REPAIR/REJECT and every negative or unresolved finding; invent nothing. '
+          + 'Independent follow-ups must cover every remaining comparison before logical PASS. '
+          + 'All source-fidelity, identity, quality and rejection gates remain unchanged.\n';
+        prompt = packet.prompt.slice(0,parsed.end) + compact;
+      }
+    }
+  }
+  if (prompt.length > PHYSICAL_PROMPT_LIMIT) invalid('Initial comparison schedule exceeds the physical prompt limit; no unbounded fallback');
+  return {...packet,prompt};
 }
 
 /** Index identifiers are immutable transport references, never model-authored judgments. */

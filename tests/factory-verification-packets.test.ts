@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse, sha256 } from "../src/factory/verification-packets";
+import { planVerification, readPacketResponse, mergePacketResponses, PHYSICAL_PROMPT_LIMIT, completePacketResponse, sha256, scheduleInitialComparisonReply } from "../src/factory/verification-packets";
 
 function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
@@ -186,4 +186,89 @@ test("large single-target projection keeps assignments, peers, neighbors and unt
   expect(full.duplicate_verdicts).toHaveLength(164);expect(new Set(full.duplicate_verdicts.map((v:any)=>v.other_id)).size).toBe(164);
   expect(full.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
 
+});
+
+const SINGLE_SUFFIX = '\n# BOUNDED INITIAL COMPARISON REPLY\nFor this INITIAL physical reply only, return the complete independently reviewed row and duplicate_verdicts for other_index 0 through 23. This initial output schedule supersedes the earlier instruction to emit every comparison in one reply. All supplied neighbors remain full read-only evidence. Do not omit any material concern: preserve REPAIR, REJECT, DUPLICATE or unresolved findings as required. The factory will independently request each remaining required comparison in bounded follow-up calls, and cannot deliver a complete logical PASS until every required comparison has an actual judgment. Do not emit remaining indices in this initial reply or invent their results. Every source-fidelity, identity, quality and negative-finding rule remains unchanged.\n';
+
+function scheduledIndices(packet: {prompt:string}): Record<string, number[]> {
+  return JSON.parse(packet.prompt.split('Candidate-local initial comparison schedule (JSON):\n')[1]!.split('\n')[0]!);
+}
+
+test('pure initial schedule shares 24 decisions across six candidates without mutating evidence',async()=>{
+  const packet=planVerification(fixture(6,40,100).prompt)!.packets[0]!;
+  const before=JSON.stringify(packet);const scheduled=scheduleInitialComparisonReply(packet);
+  const indices=scheduledIndices(scheduled);
+  expect(Object.keys(indices)).toEqual(packet.candidateIds);
+  for(const cid of packet.candidateIds)expect(indices[cid]).toEqual([0,1,2,3]);
+  expect(Object.values(indices).flat()).toHaveLength(24);
+  expect(scheduled.prompt.startsWith(packet.prompt)).toBeTrue();
+  expect(scheduled.neighborIdentities).toBe(packet.neighborIdentities);
+  expect(JSON.stringify(packet)).toBe(before);
+  const initial=packet.candidateIds.map(candidate_id=>({candidate_id,verification_status:'PASS',en:'immutable source',duplicate_verdicts:indices[candidate_id]!.map(other_index=>({other_index,verdict:'DISTINCT',reason:'fixture distinction'}))}));
+  const calls:number[]=[];
+  const result=await completePacketResponse(initial.map(r=>JSON.stringify(r)).join('\n'),scheduled,async extra=>{
+    const candidate_id=extra.candidateIds[0]!;const refs=extra.neighborIdentities[candidate_id]!;calls.push(refs.length);
+    return JSON.stringify({candidate_id,duplicate_verdicts:refs.map(ref=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:'DISTINCT',reason:'fixture comparison'}))});
+  });
+  expect(calls.length).toBe(12);expect(calls.every(n=>n<=24)).toBeTrue();
+  for(const cid of packet.candidateIds){const r=JSON.parse(result.get(cid)!);expect(r.en).toBe('immutable source');expect(r.duplicate_verdicts).toHaveLength(40);}
+});
+
+test('single indexed schedule preserves the exact previously published suffix and is idempotent',()=>{
+  const packet=planVerification(fixture(1,164,100).prompt)!.packets[0]!;
+  const scheduled=scheduleInitialComparisonReply(packet);
+  expect(scheduled.prompt).toBe(packet.prompt+SINGLE_SUFFIX);
+  expect(scheduleInitialComparisonReply(scheduled)).toBe(scheduled);
+});
+
+test('small initial schedules stay byte-identical and sparse candidates receive deterministic budget',()=>{
+  const packet=planVerification(fixture(6,4,100).prompt)!.packets[0]!;
+  expect(scheduleInitialComparisonReply(packet)).toBe(packet);
+  const large=planVerification(fixture(3,40,100).prompt)!.packets[0]!;const ids=large.candidateIds;
+  const sparse={...large,neighborIdentities:{[ids[0]!]:[],[ids[1]!]:large.neighborIdentities[ids[1]!]!.slice(0,1),[ids[2]!]:large.neighborIdentities[ids[2]!]!}};
+  const indices=scheduledIndices(scheduleInitialComparisonReply(sparse));
+  expect(indices[ids[0]!]).toEqual([]);expect(indices[ids[1]!]).toEqual([0]);
+  expect(indices[ids[2]!]).toEqual(Array.from({length:23},(_,i)=>i));
+});
+
+test('nonindexed initial schedule names exact supplied identities and never invents indices',()=>{
+  const packet=planVerification(fixture(2,40,100).prompt)!.packets[0]!;
+  const legacy={...packet,prompt:packet.legacyPrompt!,replyFormat:undefined};
+  const scheduled=scheduleInitialComparisonReply(legacy);
+  const selected=JSON.parse(scheduled.prompt.split('Candidate-local initial comparison schedule (JSON):\n')[1]!.split('\n')[0]!);
+  for(const cid of packet.candidateIds)expect(selected[cid]).toEqual(packet.neighborIdentities[cid]!.slice(0,12).map(n=>({other_id:n.candidate_id,other_sha256:n.row_sha256})));
+});
+
+test('initial schedule fails closed when the physical prompt has no suffix headroom',()=>{
+  const packet=planVerification(fixture(1,40,100).prompt)!.packets[0]!;
+  expect(()=>scheduleInitialComparisonReply({...packet,prompt:'x'.repeat(PHYSICAL_PROMPT_LIMIT)})).toThrow();
+});
+
+
+test('near-limit unindexed scheduling shortens only the recognized assignment prose',async()=>{
+  const indexed=planVerification(fixture(1,174,100).prompt)!.packets[0]!;
+  const raw=indexed.legacyPrompt!;
+  const packet={...indexed,prompt:raw.replace('GROUP_ID: fixture\n','GROUP_ID: fixture\n'+'x'.repeat(199995-raw.length)),replyFormat:undefined,legacyPrompt:undefined};
+  expect(packet.prompt.length).toBe(199995);
+  const boundary='\n# VERIFICATION TRANSPORT ASSIGNMENT\n';
+  const prefix=packet.prompt.slice(0,packet.prompt.indexOf(boundary));
+  const scheduled=scheduleInitialComparisonReply(packet);
+  expect(scheduled.prompt.length).toBeLessThanOrEqual(PHYSICAL_PROMPT_LIMIT);
+  expect(scheduled.prompt.slice(0,scheduled.prompt.indexOf(boundary))).toBe(prefix);
+  expect(scheduled.prompt).toContain('first 24 neighbors_by_candidate references');
+  expect(scheduled.neighborIdentities).toBe(packet.neighborIdentities);
+  expect(scheduleInitialComparisonReply(scheduled)).toBe(scheduled);
+  const cid=packet.candidateIds[0]!;const refs=packet.neighborIdentities[cid]!;
+  const judgments=(values:typeof refs)=>values.map(ref=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:'DISTINCT',reason:'fixture comparison'}));
+  let calls=0;
+  const result=await completePacketResponse(JSON.stringify({candidate_id:cid,verification_status:'PASS',en:'immutable',duplicate_verdicts:judgments(refs.slice(0,24))}),scheduled,async extra=>{
+    calls++;expect(extra.prompt.length).toBeLessThanOrEqual(PHYSICAL_PROMPT_LIMIT);
+    const duplicate_verdicts=judgments(extra.neighborIdentities[cid]!);
+    if(calls===7)duplicate_verdicts.at(-1)!.verdict='DUPLICATE';
+    return JSON.stringify({candidate_id:cid,duplicate_verdicts});
+  });
+  expect(calls).toBe(7);const full=JSON.parse(result.get(cid)!);
+  expect(full.en).toBe('immutable');expect(full.duplicate_verdicts).toHaveLength(174);
+  expect(full.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
+  expect(()=>scheduleInitialComparisonReply({...packet,prompt:packet.prompt+'\nUNRECOGNIZED GATE'})).toThrow();
 });

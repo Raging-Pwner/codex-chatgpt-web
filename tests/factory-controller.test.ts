@@ -243,3 +243,32 @@ test('cached packet replay leaves I/O turns for helper startup and heartbeats',a
  for(let i=0;i<30&&!messages.some(e=>e.type==='result'&&'text' in e||e.type==='error');i++)await settle();
  expect(loads).toBeGreaterThan(1);expect(messages.some(e=>e.type==='error')).toBe(false);expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(true);await c.shutdown();
 });
+
+
+test('only uncached reviews receive bounded initial output and every complement finishes before delivery',async()=>{
+ const messages:any[]=[],evidence:any[]=[],prompts:string[]=[];
+ const original=planVerification(largeVerification())!;
+ const c=new FactoryController({inspect:async()=>observed,close:()=>{},emit:e=>messages.push(e),packetEvidence:e=>evidence.push(e),loadPacketResponse:packet=>{
+  if(packet.prompt!==original.packets[0]!.prompt)return undefined;
+  const text=validPacketRows(packet.prompt);return {text,sourceResponsePath:'cached.response',sourcePromptPath:'cached.prompt',sourceManifestSha256:'a'.repeat(64),responseSha256:sha256(text)};
+ },run:async turn=>{
+  const text=(await turn.prepare()).text;prompts.push(text);await turn.onSubmitted!();
+  expect(messages.some(e=>e.type==='result'&&'text' in e)).toBe(false);
+  if(turn.traceId!.includes('_s')){
+   const extra=evidence.findLast(e=>e.stage==='supplement_plan').packet;
+   return extra.candidateIds.map((candidate_id:string)=>JSON.stringify({candidate_id,duplicate_verdicts:extra.neighborIdentities[candidate_id].map((ref:any)=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:'DISTINCT',reason:'offline fixture distinction'}))})).join('\n');
+  }
+  expect(text).toContain('# BOUNDED INITIAL COMPARISON REPLY');
+  return validPacketRows(text).split('\n').map(line=>{const row=JSON.parse(line);row.duplicate_verdicts=row.duplicate_verdicts.slice(0,12);return JSON.stringify(row);}).join('\n');
+ }});
+ await c.handle({type:'inspect',id:'inspect1'});await c.handle({...request('bounded_uncached'),prompt:largeVerification()});
+ for(let i=0;i<100&&!messages.some(e=>e.type==='result'&&'text' in e||e.type==='error');i++)await settle();
+ expect(messages.some(e=>e.type==='error')).toBe(false);expect(messages.filter(e=>e.type==='result'&&'text' in e)).toHaveLength(1);
+ const recorded=evidence.find(e=>e.stage==='plan').plan;
+ expect(recorded.packets[0].prompt).toBe(original.packets[0]!.prompt);
+ expect(recorded.packets[1].neighborIdentities).toEqual(original.packets[1]!.neighborIdentities);
+ expect(evidence.filter(e=>e.stage==='reused')).toHaveLength(1);
+ expect(evidence.filter(e=>e.stage==='supplement_plan')).toHaveLength(4);
+ expect(prompts).toHaveLength(5);expect(evidence.at(-1).stage).toBe('complete');
+ await c.shutdown();
+});
