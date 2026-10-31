@@ -115,7 +115,13 @@ export function planVerification(prompt: string): VerificationPlan | undefined {
     try {
       projectContext = true;
       const projected = indexVerificationPacket(render(indexed.candidateIds));
-      return projected.prompt.length < indexed.prompt.length ? projected : indexed;
+      if (projected.prompt.length >= indexed.prompt.length) return indexed;
+      const count = projected.neighborIdentities[projected.candidateIds[0]!]!.length;
+      if (count <= 24 || projected.replyFormat !== 'indexed-neighbor-verdicts/v1') return projected;
+      // Keep all comparison evidence in the initial review. Only its output is
+      // scheduled: existing sealed supplement calls must finish every other pair.
+      const scheduled = projected.prompt + '\n# BOUNDED INITIAL COMPARISON REPLY\nFor this INITIAL physical reply only, return the complete independently reviewed row and duplicate_verdicts for other_index 0 through 23. This initial output schedule supersedes the earlier instruction to emit every comparison in one reply. All supplied neighbors remain full read-only evidence. Do not omit any material concern: preserve REPAIR, REJECT, DUPLICATE or unresolved findings as required. The factory will independently request each remaining required comparison in bounded follow-up calls, and cannot deliver a complete logical PASS until every required comparison has an actual judgment. Do not emit remaining indices in this initial reply or invent their results. Every source-fidelity, identity, quality and negative-finding rule remains unchanged.\n';
+      return scheduled.length <= PHYSICAL_PROMPT_LIMIT ? {...projected,prompt:scheduled} : projected;
     } finally { projectContext = prior; }
   }) };
 }

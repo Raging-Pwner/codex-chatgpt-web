@@ -345,3 +345,10 @@ limit. Assigned source, complete peer proposals and every required neighbor rema
 present; no evidence or acceptance gate is truncated. Passive owned-stream logs add
 MIME/status, timing and sanitized network/capture categories without retaining
 headers, prompt bodies or reasoning, and never serve as completion authority.
+
+For newly projected large single-target packets, the initial reply schedules the
+first 24 candidate-local comparison indices. All full neighbor evidence remains
+in that initial request. Existing sealed supplemental calls review every remaining
+comparison in batches of at most 24 before logical completion; the reviewed row
+cannot be rewritten by supplements. Negative judgments remain quality holds. This
+is an output-work partition, not a longer timeout or acceptance of an empty answer.

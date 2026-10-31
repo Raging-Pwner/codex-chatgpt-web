@@ -5,7 +5,7 @@ function fixture(count = 8, neighbors = 40, bodyChars = 900) {
   const candidates = Array.from({length: count}, (_,i) => ({original:{candidate_id:`candidate_${i}`,content:'source context'},primary_audit_proposal:{candidate_id:`candidate_${i}`,content:'proposal context'}}));
   const pool = Array.from({length:neighbors}, (_,i) => ({candidate_id:`neighbor_${i}`,row_sha256:i.toString(16).padStart(64,'0'),content:'evidence '.repeat(Math.ceil(bodyChars/9))}));
   const map = Object.fromEntries(candidates.map(c => [c.original.candidate_id,pool]));
-  const prompt = '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION — BINDING\nGROUP_ID: fixture\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(candidates,null,2)+'\n\nThe final acceptance threshold is high.\nReturn one fenced JSONL block.\n# CONTENT-BOUND DUPLICATE REVIEW\nReview every neighbor. Empty list only if no neighbors.\n'+JSON.stringify(map,null,2);
+  const prompt = '# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION â€” BINDING\nGROUP_ID: fixture\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(candidates,null,2)+'\n\nThe final acceptance threshold is high.\nReturn one fenced JSONL block.\n# CONTENT-BOUND DUPLICATE REVIEW\nReview every neighbor. Empty list only if no neighbors.\n'+JSON.stringify(map,null,2);
   return {prompt,candidates,map};
 }
 
@@ -157,7 +157,7 @@ test('neighbor indices are candidate-local and duplicate index coverage is rejec
 });
 
 
-test("large single-target projection keeps assignments, peers, neighbors and untouched hashes",()=>{
+test("large single-target projection keeps assignments, peers, neighbors and untouched hashes",async()=>{
   const cs=Array.from({length:3},(_,i)=>({original:{candidate_id:`c_${i}`,content:`original_${i} `+'o'.repeat(2800)},primary_audit_proposal:{candidate_id:`c_${i}`,content:`proposal_${i} `+'p'.repeat(700)}}));
   const ns=Object.fromEntries(cs.map((c,i)=>[c.original.candidate_id,Array.from({length:i===1?164:128},(_,j)=>({candidate_id:`n_${i}_${j}`,row_sha256:(i*1000+j).toString(16).padStart(64,'0'),content:'v'.repeat(i===1?850:500)}))]));
   const prompt='# SYNAPSESPEAK INDEPENDENT SECOND-PASS AUDIT VERIFICATION\nORIGINAL SOURCE ROWS AND PRIMARY-AUDIT PROPOSALS:\n'+JSON.stringify(cs)+'\n# CONTENT-BOUND DUPLICATE REVIEW\nEmpty list only if no neighbors.\n'+JSON.stringify(ns);
@@ -170,4 +170,20 @@ test("large single-target projection keeps assignments, peers, neighbors and unt
   for(const i of [0,2]){expect(p.prompt).toContain(JSON.stringify(cs[i]!.primary_audit_proposal));expect(p.prompt).not.toContain(JSON.stringify(cs[i]!.original));}
   expect(p.neighborIdentities.c_1).toEqual(ns.c_1!.map(n=>({candidate_id:n.candidate_id,row_sha256:n.row_sha256})));
   for(const n of ns.c_1!)expect(p.prompt).toContain(JSON.stringify(n));
+  expect(p.prompt).toContain('# BOUNDED INITIAL COMPARISON REPLY');
+  expect(p.prompt).toContain('other_index 0 through 23');
+  const base={candidate_id:'c_1',verification_status:'PASS',fixture_field:'immutable',duplicate_verdicts:Array.from({length:24},(_,other_index)=>({other_index,verdict:'DISTINCT',reason:'offline fixture distinction'}))};
+  const batches:number[]=[];
+  const result=await completePacketResponse(JSON.stringify(base),p,async extra=>{
+    const refs=extra.neighborIdentities.c_1!;batches.push(refs.length);
+    expect(extra.prompt).not.toContain('# BOUNDED INITIAL COMPARISON REPLY');
+    expect(extra.prompt).toContain(JSON.stringify(cs[1]));
+    for(const i of [0,2])expect(extra.prompt).toContain(JSON.stringify(cs[i]!.primary_audit_proposal));
+    return JSON.stringify({candidate_id:'c_1',duplicate_verdicts:refs.map((ref,index)=>({other_id:ref.candidate_id,other_sha256:ref.row_sha256,verdict:batches.length===6&&index===19?'DUPLICATE':'DISTINCT',reason:'offline fixture comparison'}))});
+  });
+  expect(batches).toEqual([24,24,24,24,24,20]);
+  const full=JSON.parse(result.get('c_1')!);expect(full.fixture_field).toBe('immutable');
+  expect(full.duplicate_verdicts).toHaveLength(164);expect(new Set(full.duplicate_verdicts.map((v:any)=>v.other_id)).size).toBe(164);
+  expect(full.duplicate_verdicts.at(-1).verdict).toBe('DUPLICATE');
+
 });
